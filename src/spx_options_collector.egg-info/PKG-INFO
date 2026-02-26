@@ -1,0 +1,106 @@
+Metadata-Version: 2.4
+Name: spx-options-collector
+Version: 0.1.0
+Summary: Collect SPX options quotes and greeks from tastytrade and store snapshots in SQL.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: apscheduler<4,>=3.10.4
+Requires-Dist: exchange-calendars>=4.5
+Requires-Dist: pandas>=2.2.3
+Requires-Dist: pydantic>=2.9.2
+Requires-Dist: pydantic-settings>=2.5.2
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: SQLAlchemy>=2.0.36
+Requires-Dist: tastytrade>=12.0.0
+
+# SPX Options Snapshot Collector
+
+This project logs into tastytrade, fetches SPX option quotes + greeks every 15 minutes while the U.S. market is open, and writes snapshots to SQL for analysis/backtests.
+
+## What It Collects
+
+- Underlying: `SPX`
+- Expirations: next `30` expiries (`MAX_EXPIRIES`)
+- Strikes: up to `20` OTM calls + `20` OTM puts per expiry (`MAX_OTM_STRIKES_PER_SIDE`)
+- Fields:
+  - Quote: bid/ask/last/mark, bid/ask size
+  - Greeks: delta, gamma, theta, vega, rho, implied volatility
+  - Metadata: timestamp, expiration, strike, option type, symbols, underlying price
+
+## Setup
+
+1. Create and activate a virtualenv:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+2. Install dependencies:
+
+```bash
+pip install -e .
+```
+
+3. Configure env vars:
+
+```bash
+cp .env.example .env
+```
+
+Fill `.env` with credentials.
+
+Credential options:
+- OAuth style: `TASTYTRADE_CLIENT_SECRET` + `TASTYTRADE_REFRESH_TOKEN` (preferred for long-running automation)
+- User/pass fallback: `TASTYTRADE_LOGIN` + `TASTYTRADE_PASSWORD`
+
+## Run
+
+One snapshot now:
+
+```bash
+spx-collector run-once
+```
+
+Continuous scheduler:
+
+```bash
+spx-collector daemon
+```
+
+The daemon wakes every 15 minutes and only collects during XNYS open minutes.
+
+## Database
+
+Set `DB_URL` to any SQLAlchemy URL.
+
+Examples:
+- SQLite: `sqlite:///spx_options.db`
+- PostgreSQL: `postgresql+psycopg://user:pass@localhost:5432/spx`
+
+Main table:
+- `option_snapshots`
+
+Useful query examples:
+
+```sql
+-- Latest snapshot count by expiry
+SELECT expiration_date, COUNT(*)
+FROM option_snapshots
+WHERE snapshot_ts = (SELECT MAX(snapshot_ts) FROM option_snapshots)
+GROUP BY expiration_date
+ORDER BY expiration_date;
+```
+
+```sql
+-- Build an IV time series for one contract
+SELECT snapshot_ts, iv
+FROM option_snapshots
+WHERE streamer_symbol = '.SPXW260320C05000000'
+ORDER BY snapshot_ts;
+```
+
+## Notes
+
+- If spot quote resolution fails, change `UNDERLYING_STREAMER_SYMBOL` (common values: `SPX`, `.SPX`).
+- Snapshot collection is best-effort: if a quote/greeks event is missing before timeout, that row is still inserted with nulls for missing fields.

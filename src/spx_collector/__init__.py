@@ -1,0 +1,1 @@
+"""SPX options collector package."""

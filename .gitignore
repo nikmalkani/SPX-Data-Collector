@@ -6,3 +6,7 @@ __pycache__/
 *.db
 spx_market_snapshots.csv
 latest_snapshot_top20.csv
+
+*.egg-info/
+
+*.egg-info/

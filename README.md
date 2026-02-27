@@ -45,7 +45,7 @@ One snapshot now:
 spx-collector run-once
 ```
 
-Continuous scheduler (every 15 minutes):
+Continuous scheduler (weekdays, every 15 minutes from 6:00 AM to 2:00 PM Pacific):
 
 ```bash
 spx-collector daemon
@@ -113,3 +113,4 @@ FROM spx_market_snapshots;
 
 - Logs include `snapshot_id` and stage markers so you can see exactly where failures happen.
 - Collector appends rows; nothing is deleted automatically.
+- Scheduler window is enforced as: Monday-Friday and `06:00 <= local Pacific time < 14:00`.

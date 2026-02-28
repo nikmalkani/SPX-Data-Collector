@@ -1,116 +1,136 @@
-# SPX Spot + Market Metrics Collector
+# SPX Data Collector
 
-This project collects SPX index spot data and market metrics from tastytrade and stores one snapshot row per run in SQL.
+Collects index data from tastytrade and stores snapshots in SQLite/Postgres.
 
-## What It Collects
+Current behavior per run:
+- Inserts market snapshot rows for `SPX` and `VIX` into `spx_market_snapshots`.
+- Inserts SPX option contract snapshot rows into `spx_option_snapshots`.
 
-Each run writes one row to `spx_market_snapshots` with:
-- `snapshot_ts`
-- `symbol` (`SPX` by default)
-- Spot fields from market-data: `spot_price`, `bid_price`, `ask_price`, `last_price`, `mark_price`
-- Selected market-metrics fields: `implied_volatility_index`, `implied_volatility_30_day`, `historical_volatility_30_day`
+## Data Model
+
+`spx_market_snapshots` columns:
+- `snapshot_ts`, `symbol`
+- `spot_price`, `bid_price`, `ask_price`, `last_price`
+- `market_data_updated_at`, `metrics_updated_at`
+- `implied_volatility_index`, `implied_volatility_30_day`, `historical_volatility_30_day`
+
+`spx_option_snapshots` columns:
+- `snapshot_ts`, `symbol`, `streamer_symbol`
+- `expiration_date`, `strike_price`, `option_type`
+- `bid_price`, `ask_price`, `mid_price`
+- `volatility`, `delta`, `gamma`, `theta`, `vega`
+
+## Scheduler Window
+
+Daemon runs only:
+- Monday-Friday
+- Every 15 minutes
+- `06:00 <= Pacific time < 14:00`
+
+`run-once` uses the same window check.  
+If you need an off-hours forced test, call collector directly (see "Forced Snapshot Test").
 
 ## Setup
-
-1. Create and activate a virtualenv:
 
 ```bash
 python3.13 -m venv .venv
 source .venv/bin/activate
-```
-
-2. Install dependencies:
-
-```bash
 pip install -e .
 ```
 
-3. Configure `.env`:
+Create `.env` with at least:
+- `TASTYTRADE_CLIENT_SECRET`
+- `TASTYTRADE_REFRESH_TOKEN`
 
-Credentials:
-- OAuth only: `TASTYTRADE_CLIENT_SECRET` + `TASTYTRADE_REFRESH_TOKEN`
-
-Runtime settings:
+Common runtime settings:
 - `DB_URL` (default `sqlite:///spx_options.db`)
 - `UNDERLYING_SYMBOL` (default `SPX`)
+- `OPTION_EXPIRIES_PER_RUN` (default `2`)
+- `OPTION_STRIKES_PER_SIDE` (default `25`)
+- `OPTIONS_STREAM_TIMEOUT_SECONDS` (default `20`)
 - `COLLECTOR_LOG_LEVEL` (default `INFO`)
-- `COLLECTOR_DEBUG_EVENTS` (default `false`)
-- `COLLECTOR_DEBUG_SAMPLE_EVENTS` (default `3`)
 
-## Run
+## Run Commands
 
-One snapshot now:
+One scheduled-window run:
 
 ```bash
 spx-collector run-once
 ```
 
-Continuous scheduler (weekdays, every 15 minutes from 6:00 AM to 2:00 PM Pacific):
+Daemon:
 
 ```bash
 spx-collector daemon
 ```
 
-Spot diagnostics only:
+Spot-only auth/diagnostics:
 
 ```bash
 spx-collector diagnose-spot
 ```
 
-## Database
+## Forced Snapshot Test (Off-Hours)
 
-Main table:
-- `spx_market_snapshots`
+Bypasses scheduler time window and executes full collector logic once:
 
-Inspect schema:
-
-```sql
-SELECT name
-FROM sqlite_master
-WHERE type = 'table'
-ORDER BY name;
+```bash
+python -c "import asyncio; from spx_collector.config import Settings; from spx_collector.db import build_session_factory; from spx_collector.collector import SPXCollector; s=Settings(); sf=build_session_factory(s.db_url); db=sf(); n=asyncio.run(SPXCollector(s).run_snapshot(db)); db.close(); print('FORCED_INSERTED=', n)"
 ```
 
+## SQL Checks
+
+List tables:
+
 ```sql
-PRAGMA table_info('spx_market_snapshots');
+SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;
 ```
 
+Row counts:
+
 ```sql
-PRAGMA index_list('spx_market_snapshots');
+SELECT COUNT(*) FROM spx_market_snapshots;
+SELECT COUNT(*) FROM spx_option_snapshots;
 ```
 
-Latest rows:
+Latest market rows:
 
 ```sql
-SELECT *
+SELECT snapshot_ts, symbol, spot_price
 FROM spx_market_snapshots
-WHERE snapshot_ts = (SELECT MAX(snapshot_ts) FROM spx_market_snapshots)
-ORDER BY id;
+ORDER BY snapshot_ts DESC
+LIMIT 10;
 ```
 
-## Debugging Flow
-
-1. Confirm auth + spot:
-
-```bash
-spx-collector diagnose-spot
-```
-
-2. Run one full insert:
-
-```bash
-spx-collector run-once
-```
-
-3. Confirm DB write:
+Latest option rows:
 
 ```sql
-SELECT MAX(snapshot_ts), COUNT(*)
-FROM spx_market_snapshots;
+SELECT snapshot_ts, expiration_date, strike_price, option_type, bid_price, ask_price, delta
+FROM spx_option_snapshots
+ORDER BY snapshot_ts DESC, expiration_date, strike_price, option_type
+LIMIT 50;
+```
+
+Export options to CSV:
+
+```bash
+sqlite3 -header -csv spx_options.db "SELECT * FROM spx_option_snapshots ORDER BY snapshot_ts DESC, expiration_date, strike_price, option_type;" > spx_option_snapshots.csv
+```
+
+## Deploy Update (Lightsail)
+
+```bash
+cd ~/SPX-Data-Collector
+git checkout main
+git pull origin main
+source .venv/bin/activate
+pip install -e .
+sudo systemctl restart spx-collector
+journalctl -u spx-collector -n 80 --no-pager
 ```
 
 ## Notes
 
-- Logs include `snapshot_id` and stage markers so you can see exactly where failures happen.
-- Collector appends rows; nothing is deleted automatically.
-- Scheduler window is enforced as: Monday-Friday and `06:00 <= local Pacific time < 14:00`.
+- OAuth auth path only (no username/password login path).
+- Logs include `snapshot_id` and stage names for debugging.
+- Collector appends rows; no automatic cleanup/delete.

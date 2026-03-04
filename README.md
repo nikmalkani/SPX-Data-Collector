@@ -3,7 +3,7 @@
 Collects index data from tastytrade and stores snapshots in SQLite/Postgres.
 
 Current behavior per run:
-- Inserts market snapshot rows for `SPX` and `VIX` into `spx_market_snapshots`.
+- Inserts one market snapshot row for `SPX` into `spx_market_snapshots`.
 - Inserts SPX option contract snapshot rows into `spx_option_snapshots`.
 
 ## Data Model
@@ -46,7 +46,7 @@ Common runtime settings:
 - `DB_URL` (default `sqlite:///spx_options.db`)
 - `UNDERLYING_SYMBOL` (default `SPX`)
 - `OPTION_EXPIRIES_PER_RUN` (default `2`)
-- `OPTION_STRIKES_PER_SIDE` (default `25`)
+- `OPTION_STRIKES_COUNT` (default `140`)
 - `OPTIONS_STREAM_TIMEOUT_SECONDS` (default `20`)
 - `COLLECTOR_LOG_LEVEL` (default `INFO`)
 

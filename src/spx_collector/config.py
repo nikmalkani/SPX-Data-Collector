@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     db_url: str = Field(default="sqlite:///spx_options.db", alias="DB_URL")
     underlying_symbol: str = Field(default="SPX", alias="UNDERLYING_SYMBOL")
     option_expiries_per_run: int = Field(default=2, alias="OPTION_EXPIRIES_PER_RUN", ge=1)
-    option_strikes_per_side: int = Field(default=25, alias="OPTION_STRIKES_PER_SIDE", ge=1)
+    option_strikes_count: int = Field(default=140, alias="OPTION_STRIKES_COUNT", ge=1)
     options_stream_timeout_seconds: int = Field(
         default=20, alias="OPTIONS_STREAM_TIMEOUT_SECONDS", ge=1
     )

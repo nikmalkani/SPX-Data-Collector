@@ -18,11 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "mode",
-        choices=["run-once", "daemon", "diagnose-spot"],
+        choices=["run-once", "daemon", "diagnose-spot", "run-options-only"],
         help=(
             "run-once: collect one snapshot now; "
             "daemon: schedule every 15 minutes; "
-            "diagnose-spot: authenticate and resolve underlying spot with detailed logs."
+            "diagnose-spot: authenticate and resolve underlying spot with detailed logs; "
+            "run-options-only: fetch and persist options snapshots without market-data requests."
         ),
     )
     return parser
@@ -49,6 +50,14 @@ def main() -> None:
         elif args.mode == "daemon":
             session_factory = build_session_factory(settings.db_url)
             start_scheduler(settings, session_factory)
+        elif args.mode == "run-options-only":
+            session_factory = build_session_factory(settings.db_url)
+            collector = SPXCollector(settings)
+            with session_factory() as db_session:
+                inserted = asyncio.run(collector.run_options_only(db_session))
+            logging.getLogger(__name__).info(
+                "options_only_success rows_inserted=%s", inserted
+            )
         else:
             collector = SPXCollector(settings)
             spot = asyncio.run(collector.diagnose_spot())

@@ -46,19 +46,19 @@ class _StubCollector(SPXCollector):
             historical_volatility_30_day=15.1,
         )
 
-    async def _select_options(self, tt_session, *, spot: float, snapshot_id: str):  # type: ignore[override]
+    async def _select_options_without_spot(self, tt_session, *, snapshot_id: str):  # type: ignore[override]
         return [
             _Obj(
-                streamer_symbol=".SPXW260301C06900000",
+                streamer_symbol=".SPXW260301P06900000",
                 expiration_date=datetime(2026, 3, 1, tzinfo=UTC).date(),
                 strike_price=6900.0,
-                option_type=_OptType("CALL"),
+                option_type=_OptType("PUT"),
             )
         ]
 
     async def _stream_option_events(self, tt_session, *, selected_options, snapshot_id: str):  # type: ignore[override]
         return {
-            ".SPXW260301C06900000": {
+            ".SPXW260301P06900000": {
                 "quote": _Obj(bid_price=10.0, ask_price=12.0),
                 "greeks": _Obj(
                     volatility=0.2,
@@ -89,8 +89,8 @@ class CollectorTests(unittest.TestCase):
 
         with session_factory() as db_session:
             inserted = asyncio.run(collector.run_snapshot(db_session))
-            self.assertEqual(inserted, 3)
-            self.assertEqual(db_session.query(SPXMarketSnapshot).count(), 2)
+            self.assertEqual(inserted, 2)
+            self.assertEqual(db_session.query(SPXMarketSnapshot).count(), 1)
             row = db_session.query(SPXMarketSnapshot).filter_by(symbol="SPX").one()
             opt = db_session.query(SPXOptionSnapshot).one()
             self.assertEqual(row.symbol, "SPX")
@@ -98,8 +98,8 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(row.bid_price, 6900.3)
             self.assertEqual(row.ask_price, 6900.7)
             self.assertEqual(row.implied_volatility_index, 18.2)
-            self.assertEqual(opt.streamer_symbol, ".SPXW260301C06900000")
-            self.assertEqual(opt.option_type, "CALL")
+            self.assertEqual(opt.streamer_symbol, ".SPXW260301P06900000")
+            self.assertEqual(opt.option_type, "PUT")
             self.assertEqual(opt.mid_price, 11.0)
             self.assertEqual(opt.delta, 0.55)
 

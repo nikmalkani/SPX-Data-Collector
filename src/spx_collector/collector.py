@@ -129,18 +129,11 @@ class SPXCollector:
                 "Unable to determine underlying spot for options selection.",
                 context={"snapshot_id": snapshot_id, "symbol": symbol},
             )
-        selected_options = await self._select_options(
-            tt_session, spot=underlying_spot, snapshot_id=snapshot_id
-        )
-        option_events = await self._stream_option_events(
-            tt_session, selected_options=selected_options, snapshot_id=snapshot_id
-        )
-
-        option_rows = self._build_option_rows(
+        option_rows = await self._collect_option_rows(
+            tt_session=tt_session,
+            snapshot_id=snapshot_id,
             snapshot_ts=snapshot_ts,
             symbol=symbol,
-            selected_options=selected_options,
-            option_events=option_events,
         )
 
         try:
@@ -175,6 +168,75 @@ class SPXCollector:
             len(option_rows),
         )
         return len(market_rows) + len(option_rows)
+
+    # Options-only path for rate-limit diagnostics without market-data requests.
+    async def run_options_only(self, db_session: Session) -> int:
+        snapshot_ts = datetime.now(tz=UTC)
+        snapshot_id = _snapshot_id(snapshot_ts)
+        symbol = self.settings.underlying_symbol
+        LOGGER.info(
+            "snapshot_id=%s stage=options_only_start symbol=%s",
+            snapshot_id,
+            symbol,
+        )
+
+        tt_session = self._build_tastytrade_session(snapshot_id=snapshot_id)
+        option_rows = await self._collect_option_rows(
+            tt_session=tt_session,
+            snapshot_id=snapshot_id,
+            snapshot_ts=snapshot_ts,
+            symbol=symbol,
+        )
+
+        try:
+            if option_rows:
+                db_session.add_all(option_rows)
+            db_session.commit()
+        except Exception as exc:
+            context = {
+                "snapshot_id": snapshot_id,
+                "symbol": symbol,
+                "option_rows": len(option_rows),
+                "error": exc.__class__.__name__,
+            }
+            LOGGER.exception(
+                "snapshot_id=%s stage=options_only_persistence_error symbol=%s",
+                snapshot_id,
+                symbol,
+            )
+            raise SnapshotPersistenceError(
+                "Failed to persist SPX option snapshots.", context=context
+            ) from exc
+
+        LOGGER.info(
+            "snapshot_id=%s stage=options_only_commit_success symbol=%s option_rows=%s",
+            snapshot_id,
+            symbol,
+            len(option_rows),
+        )
+        return len(option_rows)
+
+    # Shared options pipeline used by both run_snapshot and run_options_only.
+    async def _collect_option_rows(
+        self,
+        *,
+        tt_session: TastytradeSession,
+        snapshot_id: str,
+        snapshot_ts: datetime,
+        symbol: str,
+    ) -> list[SPXOptionSnapshot]:
+        selected_options = await self._select_options_without_spot(
+            tt_session, snapshot_id=snapshot_id
+        )
+        option_events = await self._stream_option_events(
+            tt_session, selected_options=selected_options, snapshot_id=snapshot_id
+        )
+        return self._build_option_rows(
+            snapshot_ts=snapshot_ts,
+            symbol=symbol,
+            selected_options=selected_options,
+            option_events=option_events,
+        )
 
     # OAuth-only auth path.
     def _build_tastytrade_session(self, snapshot_id: str) -> TastytradeSession:
@@ -314,11 +376,61 @@ class SPXCollector:
 
             calls.sort(key=lambda c: abs(float(c.strike_price) - spot))
             puts.sort(key=lambda c: abs(float(c.strike_price) - spot))
-            selected.extend(calls[: self.settings.option_strikes_per_side])
-            selected.extend(puts[: self.settings.option_strikes_per_side])
+            selected.extend(calls[: self.settings.option_strikes_count])
+            selected.extend(puts[: self.settings.option_strikes_count])
 
         LOGGER.info(
             "snapshot_id=%s stage=options_selected symbol=%s expiries_considered=%s options_selected=%s",
+            snapshot_id,
+            symbol,
+            len(expiries),
+            len(selected),
+        )
+        return selected
+
+    async def _select_options_without_spot(
+        self,
+        tt_session: TastytradeSession,
+        *,
+        snapshot_id: str,
+    ) -> list[Option]:
+        symbol = self.settings.underlying_symbol
+        LOGGER.info(
+            "snapshot_id=%s stage=option_chain_request_no_spot symbol=%s",
+            snapshot_id,
+            symbol,
+        )
+        chain = await get_option_chain(tt_session, symbol)
+        if not chain:
+            raise OptionChainSelectionError(
+                "Option chain returned no expirations.",
+                context={"snapshot_id": snapshot_id, "symbol": symbol},
+            )
+
+        expiries = sorted(chain.keys())[: self.settings.option_expiries_per_run]
+        selected: list[Option] = []
+        for expiry in expiries:
+            contracts = chain.get(expiry, [])
+            puts = [
+                c
+                for c in contracts
+                if getattr(c, "option_type", None) == OptionType.PUT
+                and _to_float(getattr(c, "strike_price", None)) is not None
+            ]
+            puts.sort(key=lambda c: float(c.strike_price))
+
+            count = self.settings.option_strikes_count
+            if len(puts) <= count:
+                selected_puts = puts
+            else:
+                # Keep a centered strike window to avoid pulling the full chain.
+                start = (len(puts) - count) // 2
+                selected_puts = puts[start : start + count]
+
+            selected.extend(selected_puts)
+
+        LOGGER.info(
+            "snapshot_id=%s stage=options_selected_no_spot symbol=%s expiries_considered=%s options_selected=%s",
             snapshot_id,
             symbol,
             len(expiries),
@@ -441,7 +553,7 @@ class SPXCollector:
         return rows
 
     def _market_symbols(self) -> list[str]:
-        symbols = [self.settings.underlying_symbol, "VIX"]
+        symbols = [self.settings.underlying_symbol]
         deduped: list[str] = []
         seen: set[str] = set()
         for symbol in symbols:

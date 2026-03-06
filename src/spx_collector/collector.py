@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 from tastytrade.dxfeed import Greeks, Quote
@@ -20,6 +21,7 @@ from .config import Settings
 from .models import SPXMarketSnapshot, SPXOptionSnapshot
 
 LOGGER = logging.getLogger(__name__)
+_EASTERN_TZ = ZoneInfo("America/New_York")
 
 
 # Base structured error for stage-specific failures.
@@ -537,6 +539,8 @@ class SPXCollector:
                     symbol=symbol,
                     streamer_symbol=streamer_symbol,
                     expiration_date=option.expiration_date,
+                    dte=max(0, (option.expiration_date - snapshot_ts.date()).days),
+                    time_in_day_est=snapshot_ts.astimezone(_EASTERN_TZ).strftime("%H:%M"),
                     strike_price=float(option.strike_price),
                     option_type=getattr(option.option_type, "name", str(option.option_type)),
                     bid_price=bid,

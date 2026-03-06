@@ -64,6 +64,10 @@ class SPXOptionSnapshot(Base):
     streamer_symbol: Mapped[str] = mapped_column(String(128), index=True)
 
     expiration_date: Mapped[date] = mapped_column(Date, index=True)
+    dte: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    time_in_day_est: Mapped[str | None] = mapped_column(
+        String(5), nullable=True, index=True
+    )
     strike_price: Mapped[float] = mapped_column(Float, index=True)
     option_type: Mapped[str] = mapped_column(String(8), index=True)
 

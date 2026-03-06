@@ -17,8 +17,15 @@ Current behavior per run:
 `spx_option_snapshots` columns:
 - `snapshot_ts`, `symbol`, `streamer_symbol`
 - `expiration_date`, `strike_price`, `option_type`
+- `dte` (days to expiration at snapshot date)
+- `time_in_day_est` (`HH:MM` in US Eastern Time derived from snapshot timestamp)
 - `bid_price`, `ask_price`, `mid_price`
 - `volatility`, `delta`, `gamma`, `theta`, `vega`
+
+Notes:
+- `dte` is computed as `max(0, expiration_date - date(snapshot_ts))`.
+- `time_in_day_est` is stored in Eastern time for easier intraday grouping.
+- SQLite startup migration auto-adds/backfills these columns for existing DBs.
 
 ## Scheduler Window
 

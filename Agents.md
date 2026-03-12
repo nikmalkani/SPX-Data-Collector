@@ -53,3 +53,10 @@ code --new-window --remote ssh-remote+lightsail-spx /home/ubuntu/SPX-Data-Collec
 ```bash
 ssh -i ~/Downloads/LightsailDefaultKey-us-west-2.pem ubuntu@16.144.246.185
 ```
+
+## Backtest UI Port Defaults
+- `backtest_dev.py` default port: `8787`
+- `backtest_staging.py` default port: `8788`
+- `backtest_prod.py` default port: `8789`
+
+Use `--port` to override when needed, but keep this mapping as the standard to avoid collisions.

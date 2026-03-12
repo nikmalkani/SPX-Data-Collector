@@ -998,7 +998,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run local SQL UI against collector database.",
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--port", type=int, default=8789)
     return parser
 
 
@@ -1153,6 +1153,53 @@ _HTML = """<!doctype html>
       align-items: center;
       gap: 6px;
     }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .stat-tile {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 12px;
+    }
+    .stat-label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .stat-value {
+      margin-top: 6px;
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .section-heading {
+      grid-column: 1 / -1;
+      margin: 8px 0 0;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .field-disabled {
+      opacity: 0.45;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #0d9488;
+    }
     .chart-legend-swatch {
       width: 14px;
       height: 8px;
@@ -1296,11 +1343,10 @@ _HTML = """<!doctype html>
 <body>
   <div class="wrap">
     <h1>SPX Playground</h1>
-    <div class="sub">Run read-only SQL against your local collector DB, and analyze option movement by contract.</div>
+    <div class="sub">Build SPX strategies and analyze option movement by contract.</div>
     <div class="tab-nav">
       <button type="button" class="tab-button active" data-tab="strategy">Strategy</button>
       <button type="button" class="tab-button" data-tab="analyzer">Options Analyzer</button>
-      <button type="button" class="tab-button" data-tab="sql">SQL Lab</button>
     </div>
 
     <section id="tab-strategy" class="tab-panel active" data-tab="strategy">
@@ -1329,12 +1375,13 @@ _HTML = """<!doctype html>
                 <option value="CALL">CALL</option>
               </select>
             </div>
+            <div class="section-heading">Entry Criteria</div>
             <div>
               <label for="strategyDte">DTE</label><br/>
               <input id="strategyDte" class="input" type="number" min="0" step="1" value="1" />
             </div>
             <div>
-              <label for="strategyDelta">Target Delta</label><br/>
+              <label for="strategyDelta">Delta</label><br/>
               <input id="strategyDelta" class="input" type="number" min="0" step="1" value="35" />
             </div>
             <div>
@@ -1367,12 +1414,32 @@ _HTML = """<!doctype html>
               <tbody></tbody>
             </table>
           </div>
-          <button id="strategyRunBtn" class="run-analysis-wide" style="display:none; margin-top:12px;">Run Analysis</button>
+          <div class="controls-card" style="margin-top:12px;">
+            <div class="section-heading">Exit Criteria</div>
+            <div class="checkbox-row">
+              <input id="strategyHoldToExpiry" type="checkbox" />
+              <label for="strategyHoldToExpiry">Hold till expiry</label>
+            </div>
+            <div>
+              <label for="strategyExitDays">Exit After (days)</label><br/>
+              <input id="strategyExitDays" class="input" type="number" min="0" step="1" value="0" />
+            </div>
+            <div>
+              <label for="strategyExitTime">Time (ET)</label><br/>
+              <input id="strategyExitTime" class="input" type="time" value="15:30" />
+            </div>
+          </div>
+          <button id="strategyRunBtn" class="run-analysis-wide" style="display:none; margin-top:12px;">Run Strategy</button>
           <div id="strategyAnalysisMeta" class="meta" style="margin-top:4px;">Resolve at least one leg to analyze.</div>
         </div>
       </div>
 
       <div class="grid full">
+        <div class="card">
+          <h2 style="margin-bottom: 6px;">Strategy Stats</h2>
+          <div id="strategyStatsMeta" class="meta">Run analysis to compute trade-level summary stats.</div>
+          <div id="strategyStatsGrid" class="stats-grid"></div>
+        </div>
         <div class="card">
           <h2 style="margin-bottom: 6px;">Strategy Time Series</h2>
           <div id="strategySeriesMeta" class="meta">Resolved legs only.</div>
@@ -1406,7 +1473,7 @@ _HTML = """<!doctype html>
           <div class="chart-legend">
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#cbd5e1;"></span>Trade lines</span>
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#0f172a;"></span>Blended avg</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#94a3b8;"></span>100 baseline</span>
+            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#94a3b8;"></span>Strategy cost</span>
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:rgba(22,163,74,0.24);"></span>Profit zone</span>
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:rgba(220,38,38,0.22);"></span>Loss zone</span>
           </div>
@@ -1485,38 +1552,11 @@ _HTML = """<!doctype html>
       </div>
     </section>
 
-    <section id="tab-sql" class="tab-panel" data-tab="sql">
-      <div class="grid">
-        <div class="card">
-          <label><strong>SQL Query</strong></label>
-          <textarea id="sqlQuery">SELECT snapshot_ts, symbol, spot_price
-FROM spx_market_snapshots
-ORDER BY snapshot_ts DESC
-LIMIT 100;</textarea>
-          <div class="row">
-            <button id="sqlRunBtn">Run Query</button>
-            <button id="sqlCsvBtn" class="secondary" disabled>Export CSV</button>
-            <span id="sqlMeta" class="meta"></span>
-          </div>
-          <div class="result-wrap">
-            <table id="sqlResultTable">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="card">
-          <h3 style="margin:0">Schema Guide</h3>
-          <div class="meta">Tables and columns from current DB:</div>
-          <div id="sqlSchema"></div>
-        </div>
-      </div>
-    </section>
   </div>
 
   <script>
     const MAX_ANALYZER_SELECTED_CONTRACTS = 4;
-    const MAX_STRATEGY_RESOLVED_CONTRACTS = 30;
+    const MAX_STRATEGY_RESOLVED_CONTRACTS = 50;
     const MAX_STRATEGY_ANALYSIS_STREAMERS = 120;
     const MINUTE_DIFF_LABEL = 60;
 
@@ -1533,7 +1573,6 @@ LIMIT 100;</textarea>
     const tabInitState = {
       strategy: false,
       analyzer: false,
-      sql: false,
     };
 
     const analyzerState = {
@@ -1544,11 +1583,6 @@ LIMIT 100;</textarea>
       contractByStreamer: new Map(),
       tableRows: [],
       lastMeta: "",
-    };
-
-    const sqlState = {
-      lastColumns: [],
-      lastRows: [],
     };
 
     function escapeHtml(v) {
@@ -1598,6 +1632,34 @@ LIMIT 100;</textarea>
       if (!Number.isFinite(numeric)) return "";
       const normalized = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
       return String(Math.round(normalized));
+    }
+
+    function formatStrategyIndexAxisLabel(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "";
+      return `${numeric.toFixed(1)}%`;
+    }
+
+    function formatStatAmount(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "";
+      return `$${(numeric * 100).toFixed(2)}`;
+    }
+
+    function formatStatPercent(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "";
+      return `${numeric.toFixed(1)}%`;
+    }
+
+    function parseHmToMinutes(value) {
+      const raw = String(value || "").trim();
+      const match = raw.match(/^(\d{2}):(\d{2})$/);
+      if (!match) return null;
+      const hours = Number(match[1]);
+      const minutes = Number(match[2]);
+      if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+      return hours * 60 + minutes;
     }
 
     function formatLocalDateTime(value) {
@@ -1699,84 +1761,27 @@ LIMIT 100;</textarea>
       showTab("strategy");
     }
 
-    function initSqlTab() {
-      if (tabInitState.sql) return;
-      tabInitState.sql = true;
-
-      function renderSqlTable(columns, rows) {
-        renderSimpleTable("sqlResultTable", columns, rows);
-      }
-
-      async function loadSchema() {
-        const res = await fetch("/api/schema");
-        const data = await res.json();
-        const holder = document.getElementById("sqlSchema");
-        holder.innerHTML = "";
-        (data.tables || []).forEach((table) => {
-          const block = document.createElement("div");
-          block.className = "schema-block";
-          const title = document.createElement("div");
-          title.innerHTML = `<strong>${escapeHtml(table)}</strong>`;
-          block.appendChild(title);
-          const rows = (data.schema && data.schema[table]) ? data.schema[table] : [];
-          const cols = document.createElement("div");
-          cols.innerHTML = rows.map((c) => `<div class="meta">${escapeHtml(c.name)} <code>${escapeHtml(c.type || "")}</code></div>`).join("");
-          block.appendChild(cols);
-          holder.appendChild(block);
-        });
-      }
-
-      async function runSqlQuery() {
-        const query = document.getElementById("sqlQuery").value || "";
-        const meta = document.getElementById("sqlMeta");
-        const res = await fetch("/api/query", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          meta.textContent = "Error: " + (data.error || "unknown");
-          meta.className = "meta danger";
-          sqlState.lastColumns = [];
-          sqlState.lastRows = [];
-          renderSqlTable([], []);
-          document.getElementById("sqlCsvBtn").disabled = true;
-          return;
-        }
-        sqlState.lastColumns = data.columns || [];
-        sqlState.lastRows = data.rows || [];
-        renderSqlTable(sqlState.lastColumns, sqlState.lastRows);
-        meta.textContent = `${data.row_count == null ? sqlState.lastRows.length : data.row_count} rows returned`;
-        meta.className = "meta success";
-        document.getElementById("sqlCsvBtn").disabled = !sqlState.lastColumns.length;
-      }
-
-      function exportCsv() {
-        if (!sqlState.lastColumns.length) return;
-        const csv = toCsv(sqlState.lastColumns, sqlState.lastRows);
-        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "query_results.csv";
-        a.click();
-        URL.revokeObjectURL(url);
-      }
-
-      document.getElementById("sqlRunBtn").addEventListener("click", runSqlQuery);
-      document.getElementById("sqlCsvBtn").addEventListener("click", exportCsv);
-
-      loadSchema();
-      runSqlQuery();
-    }
-
     function strategyLegLabel(leg) {
       const type = String(leg.option_type || "").toUpperCase();
       const delta = formatDeltaTarget(leg.target_delta);
       const dte = leg.target_dte == null ? "" : String(leg.target_dte);
       const entry = String(leg.entry_time || "");
       return `${type} Δ${delta} DTE ${dte} @ ${entry}`;
+    }
+
+    function refreshStrategyExitCriteriaState() {
+      const holdEl = document.getElementById("strategyHoldToExpiry");
+      const exitDaysEl = document.getElementById("strategyExitDays");
+      const exitTimeEl = document.getElementById("strategyExitTime");
+      if (!holdEl || !exitDaysEl || !exitTimeEl) return;
+      const disabled = Boolean(holdEl.checked);
+      exitDaysEl.disabled = disabled;
+      exitTimeEl.disabled = disabled;
+      const wrappers = [exitDaysEl.parentElement, exitTimeEl.parentElement];
+      wrappers.forEach((wrapper) => {
+        if (!wrapper) return;
+        wrapper.classList.toggle("field-disabled", disabled);
+      });
     }
 
     function refreshStrategyRunButtonVisibility() {
@@ -1876,7 +1881,7 @@ LIMIT 100;</textarea>
         return;
       }
       if (!Number.isFinite(targetDelta) || targetDelta <= 0) {
-        meta.textContent = "Target Delta must be > 0.";
+        meta.textContent = "Delta must be > 0.";
         meta.className = "meta danger";
         return;
       }
@@ -1911,8 +1916,6 @@ LIMIT 100;</textarea>
       params.set("snapshot_from", `${effectiveFromDate}T00:00:00`);
       params.set("snapshot_to", `${effectiveToDate}T23:59:59`);
 
-      meta.textContent = "Resolving leg...";
-      meta.className = "meta";
       const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
       const payload = await res.json();
       const resolvedContracts = Array.isArray(payload.contracts) ? payload.contracts : (payload.streamer_symbol ? [payload] : []);
@@ -1925,8 +1928,8 @@ LIMIT 100;</textarea>
       const keptContracts = resolvedContracts.slice(0, MAX_STRATEGY_RESOLVED_CONTRACTS);
       const skippedCap = Math.max(0, resolvedContracts.length - keptContracts.length);
       if (!keptContracts.length) {
-        meta.textContent = `No contracts added. Strategy leg cap is ${MAX_STRATEGY_RESOLVED_CONTRACTS}.`;
-        meta.className = "meta danger";
+        meta.textContent = "";
+        meta.className = "meta";
         renderStrategyLegsTable();
         return;
       }
@@ -1943,13 +1946,12 @@ LIMIT 100;</textarea>
         entry_snapshot_ts: keptContracts[0] ? keptContracts[0].snapshot_ts : null,
         resolved_contracts: keptContracts,
       });
-      const added = keptContracts.length;
-      meta.textContent = `Resolved leg with ${added} matched contract${added === 1 ? "" : "s"}` + (skippedCap ? ` (${skippedCap} skipped at cap ${MAX_STRATEGY_RESOLVED_CONTRACTS})` : "");
-      meta.className = "meta success";
+      meta.textContent = "";
+      meta.className = "meta";
       renderStrategyLegsTable();
     }
 
-    function transformStrategySeriesRows(rows, spotSeries, tradePlans) {
+    function transformStrategySeriesRows(rows, spotSeries, tradePlans, exitCriteria) {
       const nearestSpot = buildSpotLookup(spotSeries || []);
       const rowsByStreamer = new Map();
       rows.forEach((row) => {
@@ -2005,15 +2007,46 @@ LIMIT 100;</textarea>
           .filter((ts) => ts && Number.isFinite(ts.getTime()))
           .map((ts) => ts.getTime());
         const tradeStartTs = entryTimes.length ? new Date(Math.max(...entryTimes)) : null;
-        return { ...trade, legs, trade_start_ts: tradeStartTs };
+        const expirations = legs
+          .map((leg) => String(leg.contract && leg.contract.expiration_date ? leg.contract.expiration_date : ""))
+          .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+          .sort();
+        const strategyExpirationYmd = expirations.length ? expirations[0] : "";
+        return { ...trade, legs, trade_start_ts: tradeStartTs, strategy_expiration_ymd: strategyExpirationYmd };
+      });
+
+      const completedTrades = enrichedTrades.filter((trade) => {
+        if (!trade.trade_start_ts) return false;
+        return allTimestamps.some((ts) => {
+          const currentTs = parseTimestamp(ts);
+          if (!currentTs || currentTs < trade.trade_start_ts) return false;
+          if (exitCriteria.holdTillExpiry) {
+            if (!isAtOrAfterExpiryDate(currentTs, trade.strategy_expiration_ymd)) return false;
+          } else if (!isAtOrAfterStrategyExit(currentTs, trade.trade_start_ts, exitCriteria.exitDays, exitCriteria.exitTime)) {
+            return false;
+          }
+          return trade.legs.every((leg) => {
+            const streamerRows = rowByStreamerTs.get(leg.streamer_symbol);
+            const row = streamerRows ? streamerRows.get(ts) : null;
+            const value = row && row.value != null ? Number(row.value) : null;
+            if (!row || value == null || !Number.isFinite(value) || leg.entry_value == null || !Number.isFinite(leg.entry_value)) {
+              return false;
+            }
+            if (leg.entry_ts && currentTs < leg.entry_ts) return false;
+            return true;
+          });
+        });
       });
 
       const out = [];
       allTimestamps.forEach((ts) => {
         const perTradeRows = [];
-        enrichedTrades.forEach((trade) => {
+        completedTrades.forEach((trade) => {
           const currentTs = parseTimestamp(ts);
           if (trade.trade_start_ts && currentTs && currentTs < trade.trade_start_ts) return;
+          if (exitCriteria.holdTillExpiry) {
+            if (!isBeforeOrOnExpiryDate(currentTs, trade.strategy_expiration_ymd)) return;
+          }
           let strategyValue = 0;
           let strategyCost = 0;
           let complete = true;
@@ -2027,6 +2060,10 @@ LIMIT 100;</textarea>
               return;
             }
             if (leg.entry_ts && currentTs && currentTs < leg.entry_ts) {
+              complete = false;
+              return;
+            }
+            if (!exitCriteria.holdTillExpiry && !isWithinStrategyExitWindow(currentTs, trade.trade_start_ts, exitCriteria.exitDays, exitCriteria.exitTime)) {
               complete = false;
               return;
             }
@@ -2179,6 +2216,143 @@ LIMIT 100;</textarea>
         tr.innerHTML = cells.map((value) => `<td>${escapeHtml(String(value))}</td>`).join("");
         body.appendChild(tr);
       });
+    }
+
+    function summarizeStrategyTrades(rows) {
+      const detailRows = (rows || []).filter((row) => !row.isStrategySummary);
+      const finalsByTrade = new Map();
+      detailRows.forEach((row) => {
+        const tradeKey = String(row.trade_index == null ? "" : row.trade_index);
+        const ts = String(row.snapshot_ts || "");
+        const tsDate = parseTimestamp(ts);
+        if (!tradeKey || !tsDate) return;
+        const prior = finalsByTrade.get(tradeKey);
+        if (!prior || tsDate > prior.tsDate) {
+          finalsByTrade.set(tradeKey, {
+            tradeKey,
+            ts,
+            tsDate,
+            strategy_pnl: row.strategy_pnl == null ? null : Number(row.strategy_pnl),
+            strategy_indexed: row.strategy_indexed == null ? null : Number(row.strategy_indexed),
+            strategy_cost: row.strategy_cost == null ? null : Number(row.strategy_cost),
+            strategy_price: row.strategy_price == null ? null : Number(row.strategy_price),
+          });
+        }
+      });
+
+      const finals = Array.from(finalsByTrade.values()).filter((row) => row.strategy_pnl != null && Number.isFinite(row.strategy_pnl));
+      const wins = finals.filter((row) => row.strategy_pnl > 0);
+      const losses = finals.filter((row) => row.strategy_pnl < 0);
+      const flats = finals.filter((row) => row.strategy_pnl === 0);
+      const totalPnl = finals.reduce((sum, row) => sum + row.strategy_pnl, 0);
+      const grossWin = wins.reduce((sum, row) => sum + row.strategy_pnl, 0);
+      const grossLossAbs = Math.abs(losses.reduce((sum, row) => sum + row.strategy_pnl, 0));
+      const avg = (items, selector) => items.length ? items.reduce((sum, item) => sum + selector(item), 0) / items.length : null;
+      const bestTrade = finals.length ? finals.reduce((best, row) => (best == null || row.strategy_pnl > best.strategy_pnl ? row : best), null) : null;
+      const worstTrade = finals.length ? finals.reduce((worst, row) => (worst == null || row.strategy_pnl < worst.strategy_pnl ? row : worst), null) : null;
+
+      return {
+        tradeCount: finals.length,
+        winCount: wins.length,
+        lossCount: losses.length,
+        flatCount: flats.length,
+        winRate: finals.length ? (wins.length / finals.length) * 100 : null,
+        avgWin: avg(wins, (row) => row.strategy_pnl),
+        avgLoss: avg(losses, (row) => row.strategy_pnl),
+        overallPnl: finals.length ? totalPnl : null,
+        avgTradePnl: finals.length ? totalPnl / finals.length : null,
+        avgGainLossPct: avg(
+          finals.filter((row) => row.strategy_indexed != null && Number.isFinite(row.strategy_indexed)),
+          (row) => 100 - Number(row.strategy_indexed)
+        ),
+        bestTradePnl: bestTrade ? bestTrade.strategy_pnl : null,
+        worstTradePnl: worstTrade ? worstTrade.strategy_pnl : null,
+        profitFactor: grossLossAbs > 0 ? grossWin / grossLossAbs : (wins.length ? null : null),
+      };
+    }
+
+    function renderStrategyStats(rows) {
+      const grid = document.getElementById("strategyStatsGrid");
+      const meta = document.getElementById("strategyStatsMeta");
+      if (!grid || !meta) return;
+
+      grid.innerHTML = "";
+      const stats = summarizeStrategyTrades(rows);
+      if (!stats.tradeCount) {
+        meta.textContent = "Run analysis to compute trade-level summary stats.";
+        return;
+      }
+
+      meta.textContent = `Final outcome across ${stats.tradeCount} completed trades.`;
+      const items = [
+        ["Trades", String(stats.tradeCount)],
+        ["Win Rate", formatStatPercent(stats.winRate)],
+        ["Avg Win", formatStatAmount(stats.avgWin)],
+        ["Avg Loss", formatStatAmount(stats.avgLoss)],
+        ["Avg Trade", formatStatAmount(stats.avgTradePnl)],
+        ["Gain/Loss %", formatStatPercent(stats.avgGainLossPct)],
+        ["Best Trade", formatStatAmount(stats.bestTradePnl)],
+        ["Worst Trade", formatStatAmount(stats.worstTradePnl)],
+      ];
+      if (stats.profitFactor != null && Number.isFinite(stats.profitFactor)) {
+        items.push(["Profit Factor", stats.profitFactor.toFixed(2)]);
+      }
+
+      items.forEach(([label, value]) => {
+        const tile = document.createElement("div");
+        tile.className = "stat-tile";
+        tile.innerHTML = `
+          <div class="stat-label">${escapeHtml(label)}</div>
+          <div class="stat-value">${escapeHtml(value || "n/a")}</div>
+        `;
+        grid.appendChild(tile);
+      });
+    }
+
+    function isWithinStrategyExitWindow(tsDate, tradeStartTs, exitDays, exitTime) {
+      if (!tsDate || !tradeStartTs) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const startDayUtc = dateUtcFromYmd(formatEtDateKey(tradeStartTs));
+      const exitDaysNumeric = Number(exitDays);
+      if (currentDayUtc == null || startDayUtc == null || !Number.isFinite(exitDaysNumeric)) return false;
+      const dayOffset = Math.round((currentDayUtc - startDayUtc) / 86400000);
+      if (dayOffset < exitDaysNumeric) return true;
+      if (dayOffset > exitDaysNumeric) return false;
+      const currentMinutes = parseHmToMinutes(formatEtHm(tsDate));
+      const exitMinutes = parseHmToMinutes(exitTime);
+      if (currentMinutes == null || exitMinutes == null) return false;
+      return currentMinutes <= exitMinutes;
+    }
+
+    function isAtOrAfterStrategyExit(tsDate, tradeStartTs, exitDays, exitTime) {
+      if (!tsDate || !tradeStartTs) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const startDayUtc = dateUtcFromYmd(formatEtDateKey(tradeStartTs));
+      const exitDaysNumeric = Number(exitDays);
+      if (currentDayUtc == null || startDayUtc == null || !Number.isFinite(exitDaysNumeric)) return false;
+      const dayOffset = Math.round((currentDayUtc - startDayUtc) / 86400000);
+      if (dayOffset > exitDaysNumeric) return true;
+      if (dayOffset < exitDaysNumeric) return false;
+      const currentMinutes = parseHmToMinutes(formatEtHm(tsDate));
+      const exitMinutes = parseHmToMinutes(exitTime);
+      if (currentMinutes == null || exitMinutes == null) return false;
+      return currentMinutes >= exitMinutes;
+    }
+
+    function isBeforeOrOnExpiryDate(tsDate, expirationYmd) {
+      if (!tsDate || !expirationYmd) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const expiryUtc = dateUtcFromYmd(expirationYmd);
+      if (currentDayUtc == null || expiryUtc == null) return false;
+      return currentDayUtc <= expiryUtc;
+    }
+
+    function isAtOrAfterExpiryDate(tsDate, expirationYmd) {
+      if (!tsDate || !expirationYmd) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const expiryUtc = dateUtcFromYmd(expirationYmd);
+      if (currentDayUtc == null || expiryUtc == null) return false;
+      return currentDayUtc >= expiryUtc;
     }
 
     function formatEtHm(dateObj) {
@@ -2347,10 +2521,9 @@ LIMIT 100;</textarea>
         return;
       }
 
-      const maxAbs = Math.max(...allY.map((v) => Math.abs(v - 100)));
-      const span = Math.max(1, maxAbs * 1.15);
-      const yMin = 100 - span;
-      const yMax = 100 + span;
+      const observedMax = Math.max(...allY);
+      const yMin = 0;
+      const yMax = Math.max(101, observedMax * 1.1);
 
       const width = 1200;
       const height = 320;
@@ -2373,27 +2546,48 @@ LIMIT 100;</textarea>
       for (let g = 0; g <= gridLines; g += 1) {
         const yVal = yMin + (g / gridLines) * (yMax - yMin);
         const y = yScale(yVal);
-        const isBaseline = Math.abs(yVal - 100) < 1e-6;
         const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
         line.setAttribute("x1", String(m.left));
         line.setAttribute("x2", String(m.left + innerW));
         line.setAttribute("y1", String(y));
         line.setAttribute("y2", String(y));
-        line.setAttribute("stroke", isBaseline ? "#64748b" : "#e2e8f0");
-        line.setAttribute("stroke-width", isBaseline ? "1.5" : "1");
-        line.setAttribute("stroke-dasharray", isBaseline ? "4 3" : "0");
+        line.setAttribute("stroke", "#e2e8f0");
+        line.setAttribute("stroke-width", "1");
+        line.setAttribute("stroke-dasharray", "0");
         svg.appendChild(line);
 
-        if (g === 0 || g === Math.floor(gridLines / 2) || g === gridLines) {
+        if (g === 0 || g === gridLines) {
           const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
           txt.setAttribute("x", String(m.left - 8));
           txt.setAttribute("y", String(y + 4));
           txt.setAttribute("text-anchor", "end");
           txt.setAttribute("font-size", "11");
           txt.setAttribute("fill", "#64748b");
-          txt.textContent = `${yVal.toFixed(1)}`;
+          txt.textContent = formatStrategyIndexAxisLabel(yVal);
           svg.appendChild(txt);
         }
+      }
+
+      if (yMin <= 100 && yMax >= 100) {
+        const baselineY = yScale(100);
+        const baseline = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        baseline.setAttribute("x1", String(m.left));
+        baseline.setAttribute("x2", String(m.left + innerW));
+        baseline.setAttribute("y1", String(baselineY));
+        baseline.setAttribute("y2", String(baselineY));
+        baseline.setAttribute("stroke", "#64748b");
+        baseline.setAttribute("stroke-width", "1.5");
+        baseline.setAttribute("stroke-dasharray", "4 3");
+        svg.appendChild(baseline);
+
+        const baselineLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        baselineLabel.setAttribute("x", String(m.left - 8));
+        baselineLabel.setAttribute("y", String(baselineY + 4));
+        baselineLabel.setAttribute("text-anchor", "end");
+        baselineLabel.setAttribute("font-size", "11");
+        baselineLabel.setAttribute("fill", "#64748b");
+        baselineLabel.textContent = "100%";
+        svg.appendChild(baselineLabel);
       }
 
       for (let i = 1; i < blended.length; i += 1) {
@@ -2488,6 +2682,7 @@ LIMIT 100;</textarea>
       if (!resolvedLegs.length) {
         meta.textContent = "Please resolve at least one leg.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2497,10 +2692,14 @@ LIMIT 100;</textarea>
       const symbol = document.getElementById("strategySymbol").value || "SPX";
       const snapshotFromDate = document.getElementById("strategySnapshotFromDate").value || "";
       const snapshotToDate = document.getElementById("strategySnapshotToDate").value || "";
+      const holdTillExpiry = Boolean(document.getElementById("strategyHoldToExpiry")?.checked);
+      const exitDays = parseInt(document.getElementById("strategyExitDays").value || "0", 10);
+      const exitTime = document.getElementById("strategyExitTime").value || "";
       const allDates = Array.isArray(strategyState.snapshotDates) ? strategyState.snapshotDates : [];
       if (!allDates.length) {
         meta.textContent = "No snapshot dates available for this symbol.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2508,9 +2707,49 @@ LIMIT 100;</textarea>
       }
       const fromDate = snapshotFromDate || allDates[0];
       const toDate = snapshotToDate || allDates[allDates.length - 1];
+      const entryTimes = resolvedLegs.map((leg) => parseHmToMinutes(leg.entry_time)).filter((value) => value != null);
+      const latestEntryTime = entryTimes.length ? Math.max(...entryTimes) : null;
       if (fromDate > toDate) {
         meta.textContent = "Snapshot From must not be after Snapshot To.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyTradeMatrixTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      if (!holdTillExpiry && (!Number.isFinite(exitDays) || exitDays < 0)) {
+        meta.textContent = "Exit days must be a non-negative integer.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyTradeMatrixTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      if (!holdTillExpiry && !exitTime) {
+        meta.textContent = "Exit Time is required.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyTradeMatrixTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      const exitMinutes = holdTillExpiry ? null : parseHmToMinutes(exitTime);
+      if (!holdTillExpiry && exitMinutes == null) {
+        meta.textContent = "Exit time must be a valid ET time.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyTradeMatrixTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      if (!holdTillExpiry && exitDays === 0 && latestEntryTime != null && exitMinutes <= latestEntryTime) {
+        meta.textContent = "When exit days is 0, exit time must be later than the strategy entry time.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2520,6 +2759,7 @@ LIMIT 100;</textarea>
       if (!tradeDates.length) {
         meta.textContent = "No snapshot dates in the selected range.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2577,6 +2817,7 @@ LIMIT 100;</textarea>
       if (!tradePlans.length) {
         meta.textContent = "No daily trades could be opened at the requested entry time/delta in this range.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2587,6 +2828,7 @@ LIMIT 100;</textarea>
       if (!streamers.length) {
         meta.textContent = "No contracts resolved for the current legs.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2595,6 +2837,7 @@ LIMIT 100;</textarea>
       if (streamers.length > MAX_STRATEGY_ANALYSIS_STREAMERS) {
         meta.textContent = `Resolved contracts exceed ${MAX_STRATEGY_ANALYSIS_STREAMERS} streamers for series analysis. Reduce selected range or legs.`;
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2622,6 +2865,7 @@ LIMIT 100;</textarea>
       if (!seriesRes.ok) {
         meta.textContent = "Error loading series: " + (seriesData.error || "unknown");
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
@@ -2636,16 +2880,33 @@ LIMIT 100;</textarea>
       if (!rows.length) {
         meta.textContent = "No data for the selected legs.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
-      const transformed = transformStrategySeriesRows(rows, summaryData.market_series || [], tradePlans);
+      const transformed = transformStrategySeriesRows(rows, summaryData.market_series || [], tradePlans, { holdTillExpiry, exitDays, exitTime });
+      if (!transformed.length) {
+        meta.textContent = "No completed trades yet for the selected exit criteria.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyTradeMatrixTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      const completedTradeCount = new Set(transformed.map((row) => row.trade_index).filter((value) => value != null)).size;
+      const completedContracts = new Set(
+        transformed
+          .map((row) => row.streamer_symbol)
+          .filter((value) => value != null && value !== "")
+      ).size;
+      renderStrategyStats(transformed);
       renderStrategySeriesTable(transformed);
       renderStrategyTradeMatrixTable(transformed);
       renderStrategyIndexChart(transformed);
-      meta.textContent = `Built ${tradePlans.length} daily trades from ${tradeDates.length} dates (${skippedDates} skipped), ${streamers.length} contracts, ${rows.length} option rows.`;
+      meta.textContent = `Built ${completedTradeCount} completed daily trades from ${tradeDates.length} dates (${skippedDates} skipped before entry), ${completedContracts} contracts, ${rows.length} option rows.`;
       meta.className = "meta success";
     }
 
@@ -2659,6 +2920,8 @@ LIMIT 100;</textarea>
         .addEventListener("change", loadStrategySnapshotDateOptions);
       document.getElementById("strategyResolveBtn").addEventListener("click", resolveStrategyLeg);
       document.getElementById("strategyRunBtn").addEventListener("click", runStrategyAnalysis);
+      document.getElementById("strategyHoldToExpiry").addEventListener("change", refreshStrategyExitCriteriaState);
+      refreshStrategyExitCriteriaState();
       renderStrategyLegsTable();
     }
 
@@ -3262,7 +3525,6 @@ LIMIT 100;</textarea>
       initTabs();
       initStrategyTab();
       initAnalyzerTab();
-      initSqlTab();
     }
 
     initPage();

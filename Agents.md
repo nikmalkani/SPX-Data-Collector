@@ -60,3 +60,8 @@ ssh -i ~/Downloads/LightsailDefaultKey-us-west-2.pem ubuntu@16.144.246.185
 - `backtest_prod.py` default port: `8789`
 
 Use `--port` to override when needed, but keep this mapping as the standard to avoid collisions.
+
+## Cross-Project Rules
+- Do not hardcode time zone offsets for civil/business time. Use UTC for storage and named IANA zones for conversion.
+- Keep `AGENTS.md` focused on durable rules and workflow. Put longer topic notes in clearly named docs and reference them here.
+- Time zone guidance and DST pitfalls: `docs/TIMEZONE_NOTES.md`

@@ -1132,6 +1132,7 @@ _HTML = """<!doctype html>
       border-radius: 10px;
       background: #fff;
       overflow: hidden;
+      position: relative;
       padding: 10px;
     }
     .chart-svg {
@@ -1139,6 +1140,36 @@ _HTML = """<!doctype html>
       height: 320px;
       display: block;
       background: #ffffff;
+      cursor: crosshair;
+    }
+    .chart-tooltip {
+      position: absolute;
+      min-width: 126px;
+      max-width: 187px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.94);
+      color: #f8fafc;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+      font-size: 0.7rem;
+      line-height: 1.35;
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(12px, -12px);
+      transition: opacity 120ms ease;
+      z-index: 2;
+      white-space: nowrap;
+    }
+    .chart-tooltip.visible {
+      opacity: 1;
+    }
+    .chart-tooltip-label {
+      color: #cbd5e1;
+      margin-bottom: 2px;
+    }
+    .chart-tooltip-value {
+      font-weight: 700;
+      text-align: center;
     }
     .chart-legend {
       display: flex;
@@ -1469,6 +1500,7 @@ _HTML = """<!doctype html>
           <div id="strategyIndexChartMeta" class="meta">Aligned at entry (T+0). 15-minute ET interpolation with blended average.</div>
           <div class="chart-wrap">
             <svg id="strategyIndexChartSvg" class="chart-svg" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
+            <div id="strategyIndexChartTooltip" class="chart-tooltip" aria-hidden="true"></div>
           </div>
           <div class="chart-legend">
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#cbd5e1;"></span>Trade lines</span>
@@ -2395,11 +2427,26 @@ _HTML = """<!doctype html>
       return String(Math.max(0, diff));
     }
 
-    function linePath(points, xScale, yScale) {
+    function formatStrategyHoverDelta(value, profitBelow100) {
+      if (value == null || !Number.isFinite(Number(value))) return "";
+      const rawDelta = Number(value) - 100;
+      const signedDelta = profitBelow100 ? -rawDelta : rawDelta;
+      const sign = signedDelta > 0 ? "+" : "";
+      return `${sign}${signedDelta.toFixed(2)}%`;
+    }
+
+    function stepPath(points, xScale, yScale) {
       let d = "";
       points.forEach((p, idx) => {
-        const cmd = idx === 0 ? "M" : "L";
-        d += `${cmd}${xScale(p.x).toFixed(2)},${yScale(p.y).toFixed(2)} `;
+        const x = xScale(p.x).toFixed(2);
+        const y = yScale(p.y).toFixed(2);
+        if (idx === 0) {
+          d += `M${x},${y} `;
+          return;
+        }
+        const prev = points[idx - 1];
+        const prevY = yScale(prev.y).toFixed(2);
+        d += `L${x},${prevY} L${x},${y} `;
       });
       return d.trim();
     }
@@ -2407,9 +2454,13 @@ _HTML = """<!doctype html>
     function renderStrategyIndexChart(rows) {
       const svg = document.getElementById("strategyIndexChartSvg");
       const meta = document.getElementById("strategyIndexChartMeta");
-      if (!svg || !meta) return;
+      const tooltip = document.getElementById("strategyIndexChartTooltip");
+      const wrap = svg ? svg.closest(".chart-wrap") : null;
+      if (!svg || !meta || !tooltip || !wrap) return;
 
       svg.innerHTML = "";
+      tooltip.classList.remove("visible");
+      tooltip.innerHTML = "";
       const detailRows = (rows || []).filter((row) => !row.isStrategySummary);
       if (!detailRows.length) {
         meta.textContent = "No strategy data to chart.";
@@ -2459,28 +2510,21 @@ _HTML = """<!doctype html>
           const maxElapsed = normalized[normalized.length - 1].elapsedMs;
           if (!Number.isFinite(maxElapsed) || maxElapsed < 0) return;
 
-          function interpolate(ms) {
+          function carryForward(ms) {
             if (ms < normalized[0].elapsedMs || ms > normalized[normalized.length - 1].elapsedMs) return null;
-            for (let i = 0; i < normalized.length; i += 1) {
-              if (normalized[i].elapsedMs === ms) return normalized[i].indexed;
-            }
+            let value = normalized[0].indexed;
             for (let i = 1; i < normalized.length; i += 1) {
-              const a = normalized[i - 1];
-              const b = normalized[i];
-              if (ms < a.elapsedMs || ms > b.elapsedMs) continue;
-              const span = b.elapsedMs - a.elapsedMs;
-              if (span <= 0) return a.indexed;
-              const t = (ms - a.elapsedMs) / span;
-              return a.indexed + (b.indexed - a.indexed) * t;
+              if (ms < normalized[i].elapsedMs) break;
+              value = normalized[i].indexed;
             }
-            return null;
+            return value;
           }
 
           const steps = [];
           const maxStep = Math.floor(maxElapsed / stepMs);
           for (let s = 0; s <= maxStep; s += 1) {
             const ms = s * stepMs;
-            const val = interpolate(ms);
+            const val = carryForward(ms);
             steps.push(val == null ? null : Number(val));
           }
 
@@ -2594,15 +2638,13 @@ _HTML = """<!doctype html>
         const a = blended[i - 1];
         const b = blended[i];
         if (a == null || b == null) continue;
-        const mid = (a + b) / 2;
-        const isProfit = profitBelow100 ? mid <= 100 : mid >= 100;
+        const isProfit = profitBelow100 ? a <= 100 : a >= 100;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
         const x1 = xScale(i - 1);
         const x2 = xScale(i);
-        const y1 = yScale(a);
-        const y2 = yScale(b);
+        const y = yScale(a);
         const yBase = yScale(100);
-        path.setAttribute("d", `M${x1},${yBase} L${x1},${y1} L${x2},${y2} L${x2},${yBase} Z`);
+        path.setAttribute("d", `M${x1},${yBase} L${x1},${y} L${x2},${y} L${x2},${yBase} Z`);
         path.setAttribute("fill", isProfit ? "rgba(22,163,74,0.24)" : "rgba(220,38,38,0.22)");
         svg.appendChild(path);
       }
@@ -2613,7 +2655,7 @@ _HTML = """<!doctype html>
           .filter(Boolean);
         if (pts.length < 2) return;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", linePath(pts, xScale, yScale));
+        path.setAttribute("d", stepPath(pts, xScale, yScale));
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", "#94a3b8");
         path.setAttribute("stroke-width", "1");
@@ -2626,12 +2668,96 @@ _HTML = """<!doctype html>
         .filter(Boolean);
       if (blendPts.length >= 2) {
         const blendPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        blendPath.setAttribute("d", linePath(blendPts, xScale, yScale));
+        blendPath.setAttribute("d", stepPath(blendPts, xScale, yScale));
         blendPath.setAttribute("fill", "none");
         blendPath.setAttribute("stroke", "#0f172a");
         blendPath.setAttribute("stroke-width", "2.4");
         svg.appendChild(blendPath);
       }
+
+      const hoverGuide = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      hoverGuide.setAttribute("y1", String(m.top));
+      hoverGuide.setAttribute("y2", String(m.top + innerH));
+      hoverGuide.setAttribute("stroke", "#0f172a");
+      hoverGuide.setAttribute("stroke-width", "1");
+      hoverGuide.setAttribute("stroke-dasharray", "4 4");
+      hoverGuide.setAttribute("opacity", "0");
+      hoverGuide.setAttribute("pointer-events", "none");
+      svg.appendChild(hoverGuide);
+
+      const hoverMarker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      hoverMarker.setAttribute("r", "4.5");
+      hoverMarker.setAttribute("fill", "#ffffff");
+      hoverMarker.setAttribute("stroke", "#0f172a");
+      hoverMarker.setAttribute("stroke-width", "2");
+      hoverMarker.setAttribute("opacity", "0");
+      hoverMarker.setAttribute("pointer-events", "none");
+      svg.appendChild(hoverMarker);
+
+      function hideTooltip() {
+        tooltip.classList.remove("visible");
+        tooltip.innerHTML = "";
+        hoverGuide.setAttribute("opacity", "0");
+        hoverMarker.setAttribute("opacity", "0");
+      }
+
+      function findNearestBlendedIndex(target) {
+        if (!blended.length) return -1;
+        let bestIdx = -1;
+        let bestDist = Infinity;
+        for (let i = 0; i < blended.length; i += 1) {
+          const value = blended[i];
+          if (value == null || !Number.isFinite(value)) continue;
+          const dist = Math.abs(i - target);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = i;
+          }
+        }
+        return bestIdx;
+      }
+
+      svg.addEventListener("mouseleave", hideTooltip);
+      svg.addEventListener("mousemove", (event) => {
+        const rect = svg.getBoundingClientRect();
+        const wrapRect = wrap.getBoundingClientRect();
+        if (!rect.width || !rect.height) {
+          hideTooltip();
+          return;
+        }
+
+        const relX = ((event.clientX - rect.left) / rect.width) * width;
+        if (relX < m.left || relX > m.left + innerW) {
+          hideTooltip();
+          return;
+        }
+
+        const target = Math.round(((relX - m.left) / innerW) * xMax);
+        const idx = findNearestBlendedIndex(Math.max(0, Math.min(xMax, target)));
+        if (idx < 0) {
+          hideTooltip();
+          return;
+        }
+
+        const ts = sampleTimes[idx];
+        const value = blended[idx];
+        const chartX = xScale(idx);
+        const chartY = yScale(value);
+        hoverGuide.setAttribute("x1", String(chartX));
+        hoverGuide.setAttribute("x2", String(chartX));
+        hoverGuide.setAttribute("opacity", "0.7");
+        hoverMarker.setAttribute("cx", String(chartX));
+        hoverMarker.setAttribute("cy", String(chartY));
+        hoverMarker.setAttribute("opacity", "1");
+
+        tooltip.innerHTML = `<div class="chart-tooltip-label">${escapeHtml(formatLocalDateTime(ts))}</div><div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>`;
+        tooltip.classList.add("visible");
+
+        const left = Math.min(wrapRect.width - 12, Math.max(12, event.clientX - wrapRect.left));
+        const top = Math.min(wrapRect.height - 12, Math.max(12, event.clientY - wrapRect.top));
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+      });
 
       const tickTarget = 8;
       const tickEvery = Math.max(1, Math.ceil(maxSteps / tickTarget));

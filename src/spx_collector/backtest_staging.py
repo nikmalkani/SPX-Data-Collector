@@ -825,6 +825,9 @@ class SqlUiHandler(BaseHTTPRequestHandler):
         if path == "/":
             _html_response(self, _HTML)
             return
+        if path == "/variant1":
+            _html_response(self, _variant1_html())
+            return
         if path == "/api/health":
             _json_response(self, {"ok": True, "db_path": str(self.db_path)})
             return
@@ -1023,43 +1026,187 @@ _HTML = """<!doctype html>
   <title>SPX Playground</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --ink: #0f172a;
-      --bg: #f7f8fa;
-      --panel: #ffffff;
-      --line: #e2e8f0;
-      --accent: #0d9488;
-      --accent2: #0ea5e9;
-      --muted: #64748b;
+      --ink: #1c1917;
+      --ink-soft: #44403c;
+      --bg: #f8f7f5;
+      --panel: rgba(255, 255, 255, 0.92);
+      --panel-strong: #ffffff;
+      --panel-muted: #f4f2ef;
+      --line: rgba(28, 25, 23, 0.1);
+      --accent: rgba(255, 71, 43, 1);
+      --accent-strong: rgba(217, 54, 29, 1);
+      --accent-soft: rgba(255, 227, 221, 1);
+      --muted: #6b625a;
+      --success: #166534;
+      --danger: #b91c1c;
+      --shadow-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 18px 40px rgba(28, 25, 23, 0.06);
+      --shadow-float: 0 24px 60px rgba(28, 25, 23, 0.12);
     }
 
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Space Grotesk", sans-serif;
+      font-family: "Plus Jakarta Sans", sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(1200px 420px at 0% 0%, #d1fae5 0%, transparent 50%),
-        radial-gradient(900px 360px at 100% 0%, #e0f2fe 0%, transparent 45%),
+        radial-gradient(80rem 32rem at 0% 0%, rgba(251, 146, 60, 0.18) 0%, transparent 55%),
+        radial-gradient(64rem 28rem at 100% 0%, rgba(120, 113, 108, 0.14) 0%, transparent 50%),
         var(--bg);
+      min-height: 100vh;
     }
     .wrap {
-      max-width: 1400px;
+      max-width: 1440px;
       margin: 0 auto;
-      padding: 22px;
+      padding: 24px;
     }
     h1, h2, h3 {
       margin-top: 0;
+      margin-bottom: 0;
     }
-    h1 { font-size: 2rem; letter-spacing: -0.02em; }
-    .sub { color: var(--muted); margin-top: 6px; }
+    h1 {
+      font-size: clamp(2.15rem, 3.2vw, 3.45rem);
+      line-height: 0.95;
+      letter-spacing: -0.035em;
+      word-spacing: 0.12em;
+      max-width: 10.5ch;
+    }
+    h2 { font-size: 1.15rem; letter-spacing: -0.02em; }
+    .app-shell { position: relative; z-index: 1; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 14px 22px 16px;
+      background:
+        linear-gradient(135deg, rgba(28, 25, 23, 0.96), rgba(68, 64, 60, 0.88)),
+        radial-gradient(32rem 18rem at 100% 0%, rgba(251, 146, 60, 0.22), transparent 60%);
+      color: #fafaf9;
+      box-shadow: var(--shadow-float);
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-mark {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff7ed;
+      font-size: 1.1rem;
+      font-family: inherit;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      box-shadow: 0 12px 24px rgba(234, 88, 12, 0.24);
+    }
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .eyebrow {
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255, 237, 213, 0.82);
+    }
+    .brand-title {
+      font-size: 2.35rem;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      color: #fafaf9;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(16rem, 21rem);
+      gap: 18px;
+      align-items: center;
+    }
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .sub {
+      margin-top: 0;
+      max-width: 54ch;
+      color: rgba(245, 245, 244, 0.72);
+      line-height: 1.7;
+      font-size: 1rem;
+    }
+    .hero-note {
+      font-size: 0.88rem;
+      color: rgba(245, 245, 244, 0.62);
+      max-width: 48ch;
+      line-height: 1.6;
+    }
+    .hero-panel {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(12px);
+    }
+    .hero-panel-title {
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: rgba(255, 237, 213, 0.8);
+      margin-bottom: 10px;
+    }
+    .hero-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .hero-list li {
+      display: grid;
+      gap: 4px;
+      padding: 10px 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .hero-list strong {
+      font-size: 0.88rem;
+      color: #fafaf9;
+    }
+    .hero-list span {
+      font-size: 0.78rem;
+      color: rgba(245, 245, 244, 0.62);
+      line-height: 1.4;
+    }
+    .surface {
+      margin-top: 22px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      background: rgba(255, 255, 255, 0.56);
+      backdrop-filter: blur(12px);
+    }
     .grid {
       display: grid;
       grid-template-columns: 1.4fr 1fr;
-      gap: 14px;
-      margin-top: 16px;
+      gap: 18px;
+      margin-top: 18px;
     }
     .grid.full {
       grid-template-columns: 1fr;
@@ -1067,80 +1214,108 @@ _HTML = """<!doctype html>
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 14px;
-      box-shadow: 0 6px 20px rgba(15,23,42,0.04);
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: var(--shadow-card);
       overflow: hidden;
+      backdrop-filter: blur(10px);
     }
     textarea {
       width: 100%;
       min-height: 150px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px;
+      border-radius: 16px;
+      padding: 14px 16px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.92rem;
       resize: vertical;
+      background: var(--panel-strong);
+      color: var(--ink);
     }
     .row {
       display: flex;
-      gap: 10px;
-      margin-top: 10px;
+      gap: 12px;
+      margin-top: 12px;
       flex-wrap: wrap;
       align-items: center;
     }
     button, select {
       border: 0;
-      border-radius: 10px;
-      padding: 9px 14px;
-      font-weight: 700;
+      border-radius: 16px;
+      padding: 11px 16px;
+      font-weight: 600;
       color: #fff;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       cursor: pointer;
       font-family: inherit;
+      transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease, background 160ms ease;
+      box-shadow: 0 10px 24px rgba(234, 88, 12, 0.2);
     }
-    .secondary {
-      background: #334155;
+    button:hover, select:hover { transform: translateY(-1px); }
+    button:focus-visible, select:focus-visible, .input:focus-visible, textarea:focus-visible {
+      outline: 2px solid rgba(251, 146, 60, 0.45);
+      outline-offset: 2px;
     }
+    .secondary { background: linear-gradient(135deg, #57534e, #292524); box-shadow: 0 10px 24px rgba(41, 37, 36, 0.16); }
     .input {
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px 10px;
-      background: #fff;
+      border-radius: 16px;
+      padding: 11px 14px;
+      background: var(--panel-strong);
       color: var(--ink);
       font-size: 0.9rem;
       font-family: inherit;
+      width: 100%;
     }
-    label { font-size: 0.9rem; color: #1e293b; }
+    select.input {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      padding-right: 44px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.25 5.5L7 9.25L10.75 5.5' stroke='%236b625a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+      background-size: 14px 14px;
+    }
+    label {
+      display: inline-block;
+      margin-bottom: 8px;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
     .meta {
       color: var(--muted);
-      font-size: 0.9rem;
+      font-size: 0.92rem;
+      line-height: 1.6;
     }
     .result-wrap {
       margin-top: 14px;
       max-height: 520px;
       overflow: auto;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.94);
       padding-bottom: 10px;
       scrollbar-gutter: stable both-edges;
     }
     .chart-wrap {
       margin-top: 12px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.94);
       overflow: hidden;
       position: relative;
-      padding: 10px;
+      padding: 14px;
     }
     .chart-svg {
       width: 100%;
       height: 320px;
       display: block;
-      background: #ffffff;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,242,239,0.92));
       cursor: crosshair;
+      border-radius: 16px;
     }
     .chart-tooltip {
       position: absolute;
@@ -1173,16 +1348,19 @@ _HTML = """<!doctype html>
     }
     .chart-legend {
       display: flex;
-      gap: 14px;
+      gap: 12px;
       flex-wrap: wrap;
-      margin-top: 8px;
-      font-size: 0.85rem;
-      color: #334155;
+      margin-top: 14px;
+      font-size: 0.82rem;
+      color: var(--ink-soft);
     }
     .chart-legend-item {
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: var(--panel-muted);
     }
     .chart-card-header {
       display: flex;
@@ -1198,7 +1376,10 @@ _HTML = """<!doctype html>
       justify-content: flex-end;
       margin-left: auto;
       font-size: 0.82rem;
-      color: #475569;
+      color: var(--ink-soft);
+      padding: 6px;
+      border-radius: 999px;
+      background: var(--panel-muted);
     }
     .chart-toggle-option {
       display: inline-flex;
@@ -1211,36 +1392,51 @@ _HTML = """<!doctype html>
     }
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 10px;
-      margin-top: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
     }
     .stat-tile {
       border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-      padding: 12px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,242,239,0.92));
+      padding: 16px;
     }
     .stat-label {
-      font-size: 0.78rem;
+      font-size: 0.72rem;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.12em;
       color: var(--muted);
     }
     .stat-value {
-      margin-top: 6px;
-      font-size: 1.35rem;
-      font-weight: 700;
+      margin-top: 10px;
+      font-size: 1.5rem;
+      font-weight: 600;
       color: var(--ink);
+    }
+    .meta-emphasis {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--panel-muted);
+      color: var(--ink-soft);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      vertical-align: middle;
     }
     .section-heading {
       grid-column: 1 / -1;
-      margin: 8px 0 0;
-      font-size: 0.8rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
+      margin: 10px 0 0;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--muted);
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
     }
     .field-disabled {
       opacity: 0.45;
@@ -1254,7 +1450,7 @@ _HTML = """<!doctype html>
     .checkbox-row input[type="checkbox"] {
       width: 16px;
       height: 16px;
-      accent-color: #0d9488;
+      accent-color: var(--accent);
     }
     .chart-legend-swatch {
       width: 14px;
@@ -1269,19 +1465,23 @@ _HTML = """<!doctype html>
     }
     th, td {
       border-bottom: 1px solid var(--line);
-      padding: 8px 10px;
+      padding: 11px 12px;
       text-align: left;
       white-space: nowrap;
     }
     th {
       position: sticky;
       top: 0;
-      background: #f8fafc;
+      background: rgba(244, 242, 239, 0.96);
       z-index: 1;
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
     }
     .strategy-summary {
-      background: #f1f5f9;
-      font-weight: 700;
+      background: var(--accent-soft);
+      font-weight: 600;
     }
     .schema-block {
       margin-top: 10px;
@@ -1291,28 +1491,32 @@ _HTML = """<!doctype html>
     .controls-card {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      gap: 14px;
     }
     .analyzer-filter-row {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      gap: 14px;
       grid-column: 1 / -1;
     }
     .controls-card .full { grid-column: 1 / -1; }
     .controls-card select[multiple] {
+      appearance: auto;
+      -webkit-appearance: auto;
+      -moz-appearance: auto;
       height: 260px;
-      padding: 6px;
+      padding: 10px;
       font-family: inherit;
-      border-radius: 10px;
+      border-radius: 16px;
       border: 1px solid var(--line);
-      background: #fff;
+      background: var(--panel-strong);
+      background-image: none;
       color: var(--ink);
     }
     select option { padding: 4px; }
     .small {
       font-size: 0.85rem;
-      color: #475569;
+      color: var(--ink-soft);
     }
     .status {
       font-size: 0.9rem;
@@ -1320,23 +1524,24 @@ _HTML = """<!doctype html>
       min-height: 1.25rem;
     }
     .success { color: #0369a1; }
-    .danger { color: #b91c1c; }
+    .danger { color: var(--danger); }
     .run-analysis-wide {
       width: 100%;
-      margin-top: 10px;
-      background: #16a34a;
+      margin-top: 12px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
     }
     .remove-leg {
       border: 0;
       background: transparent;
-      color: #94a3b8;
+      color: var(--muted);
       font-weight: 700;
       cursor: pointer;
       padding: 0 4px;
       font-size: 1rem;
       line-height: 1;
+      box-shadow: none;
     }
-    .remove-leg:hover { color: #64748b; }
+    .remove-leg:hover { color: var(--ink); transform: none; }
     .side-group {
       display: inline-flex;
       gap: 6px;
@@ -1352,32 +1557,41 @@ _HTML = """<!doctype html>
       opacity: 0.55;
     }
     .side-btn.active { opacity: 1; }
-    .buy-btn { background: #166534; }
-    .sell-btn { background: #b91c1c; }
+    .buy-btn { background: var(--success); }
+    .sell-btn { background: var(--danger); }
     .qty-input {
       width: 100px;
     }
     .tab-nav {
       display: flex;
       gap: 10px;
-      margin: 14px 0;
+      margin: 0;
       flex-wrap: wrap;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.62);
+      backdrop-filter: blur(10px);
+      width: fit-content;
     }
     .tab-button {
       border: 1px solid var(--line);
-      background: #fff;
+      background: transparent;
       color: var(--ink);
       font-weight: 500;
       opacity: 0.8;
+      box-shadow: none;
+      min-width: 172px;
     }
     .tab-button.active {
       color: #fff;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       opacity: 1;
+      box-shadow: 0 12px 24px rgba(234, 88, 12, 0.18);
     }
     .tab-panel {
       display: none;
-      margin-top: 0;
+      margin-top: 24px;
     }
     .tab-panel.active {
       display: block;
@@ -1387,22 +1601,99 @@ _HTML = """<!doctype html>
       from { opacity: 0; transform: translateY(3px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #f8f7f5;
+        --ink-soft: rgba(248, 247, 245, 0.78);
+        --bg: #171615;
+        --panel: rgba(33, 30, 27, 0.92);
+        --panel-strong: #211e1b;
+        --panel-muted: #2b2622;
+        --line: rgba(255, 255, 255, 0.09);
+        --muted: rgba(248, 247, 245, 0.58);
+        --shadow-card: 0 1px 2px rgba(0,0,0,0.22), 0 18px 40px rgba(0,0,0,0.24);
+        --shadow-float: 0 24px 60px rgba(0,0,0,0.34);
+      }
+      body {
+        background:
+          radial-gradient(80rem 32rem at 0% 0%, rgba(251, 146, 60, 0.12) 0%, transparent 55%),
+          radial-gradient(64rem 28rem at 100% 0%, rgba(120, 113, 108, 0.1) 0%, transparent 50%),
+          var(--bg);
+      }
+      .surface,
+      .tab-nav { background: rgba(33, 30, 27, 0.72); }
+      th { background: rgba(43, 38, 34, 0.96); }
+      .chart-svg,
+      .chart-wrap,
+      .result-wrap,
+      .stat-tile { background: var(--panel-strong); }
+    }
     @media (max-width: 1100px) {
+      .hero-grid { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .controls-card { grid-template-columns: 1fr; }
       .controls-card .full { grid-column: auto; }
-      .tab-nav { gap: 8px; }
-      .tab-button { width: 100%; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .tab-nav { gap: 8px; width: 100%; }
+      .tab-button { width: 100%; min-width: 0; }
+      .hero { padding: 14px 18px; }
+    }
+    @media (max-width: 720px) {
+      .wrap { padding: 16px; }
+      .hero { border-radius: 20px; }
+      .surface { padding: 14px; border-radius: 24px; }
+      .card { padding: 16px; border-radius: 20px; }
+      .brand-mark {
+        width: 44px;
+        height: 44px;
+        font-size: 0.95rem;
+      }
+      .brand-title { font-size: 1.65rem; }
+      .stats-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>SPX Playground</h1>
-    <div class="sub">Build SPX strategies and analyze option movement by contract.</div>
-    <div class="tab-nav">
-      <button type="button" class="tab-button active" data-tab="strategy">Strategy</button>
-      <button type="button" class="tab-button" data-tab="analyzer">Options Analyzer</button>
+  <div class="wrap app-shell">
+    <section class="hero">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-mark">MP</div>
+          <div class="brand-copy">
+            <span class="brand-title">Market&nbsp;&nbsp;Playground</span>
+          </div>
+        </div>
+      </div>
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <h1>Explore, interact, and discover</h1>
+        </div>
+        <aside class="hero-panel">
+          <div class="hero-panel-title">Included Playgrounds</div>
+          <ul class="hero-list">
+            <li>
+              <strong>Options Replay</strong>
+              <span>Define entry and exit criteria of multi-leg strategies and plot returns</span>
+            </li>
+            <li>
+              <strong>Volatility Smile</strong>
+              <span>Coming Soon</span>
+            </li>
+            <li>
+              <strong>Reddit Quizzes</strong>
+              <span>Coming Soon</span>
+            </li>
+            <li>
+              <strong>Clout Races</strong>
+              <span>Coming Soon</span>
+            </li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+    <div class="surface">
+      <div class="tab-nav">
+      <button type="button" class="tab-button active" data-tab="strategy">Strategy Replay</button>
     </div>
 
     <section id="tab-strategy" class="tab-panel active" data-tab="strategy">
@@ -1544,77 +1835,7 @@ _HTML = """<!doctype html>
       </div>
     </section>
 
-    <section id="tab-analyzer" class="tab-panel" data-tab="analyzer">
-      <div class="grid">
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Options Analyzer</h2>
-          <div class="meta">Track selected contracts and compare movement.</div>
-          <div class="controls-card" style="margin-top:10px;">
-            <div class="analyzer-filter-row">
-              <div>
-                <label for="analyzerSymbol">Symbol</label><br/>
-                <select id="analyzerSymbol" class="input">
-                  <option value="SPX">SPX</option>
-                </select>
-              </div>
-              <div>
-                <label for="analyzerOptionType">Option Type</label><br/>
-                <select id="analyzerOptionType" class="input">
-                  <option value="">All</option>
-                  <option value="CALL">CALL</option>
-                  <option value="PUT">PUT</option>
-                </select>
-              </div>
-              <div>
-                <label for="analyzerExpiration">Expiration</label><br/>
-                <select id="analyzerExpiration" class="input">
-                  <option value="">All Expirations</option>
-                </select>
-              </div>
-            </div>
-            <div class="full">
-              <div class="row" style="margin-top:4px;">
-                <span id="analyzerMeta" class="meta">Select 1-4 contracts and run analysis.</span>
-              </div>
-              <label for="analyzerContracts">Contracts (multi-select)</label>
-              <select id="analyzerContracts" multiple></select>
-            </div>
-            <div class="full">
-              <div class="result-wrap" style="margin-top:8px;">
-                <table id="analyzerLegsTable">
-                  <thead>
-                    <tr>
-                      <th></th><th>Contract</th><th>Side</th><th>Quantity</th>
-                    </tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </div>
-            <div class="full row">
-              <button id="analyzerRunStrategyBtn" class="run-analysis-wide secondary">Run Strategy Analysis</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="grid full">
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Strategy Time Series</h2>
-          <div id="analyzerStrategyMeta" class="meta">Use selected contracts with side/qty to analyze the combined strategy.</div>
-          <div class="result-wrap" style="margin-top:12px;">
-            <table id="analyzerStrategySeriesTable">
-              <thead>
-                <tr>
-                  <th>Snapshot</th><th>Contract</th><th>Spot</th><th>Price</th><th>Indexed</th><th>Leg Contribution</th><th>Strategy</th><th>Strategy Cost</th><th>Strategy P&L</th><th>Strategy Indexed</th><th>Spread</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </section>
-
+    </div>
   </div>
 
   <script>
@@ -2380,9 +2601,9 @@ _HTML = """<!doctype html>
         return;
       }
 
-      meta.textContent = `Final outcome across ${stats.tradeCount} completed trades.`;
+      const tradeLabel = stats.tradeCount === 1 ? "trade" : "trades";
+      meta.innerHTML = `Final outcome across completed trades.<span class="meta-emphasis">${escapeHtml(String(stats.tradeCount))} ${escapeHtml(tradeLabel)}</span>`;
       const items = [
-        ["Trades", String(stats.tradeCount)],
         ["Win Rate", formatStatPercent(stats.winRate)],
         ["Avg Win", formatStatAmount(stats.avgWin)],
         ["Avg Loss", formatStatAmount(stats.avgLoss)],
@@ -2390,10 +2611,8 @@ _HTML = """<!doctype html>
         ["Gain/Loss %", formatStatPercent(stats.avgGainLossPct)],
         ["Best Trade", formatStatAmount(stats.bestTradePnl)],
         ["Worst Trade", formatStatAmount(stats.worstTradePnl)],
+        ["Profit Factor", stats.profitFactor != null && Number.isFinite(stats.profitFactor) ? stats.profitFactor.toFixed(2) : "n/a"],
       ];
-      if (stats.profitFactor != null && Number.isFinite(stats.profitFactor)) {
-        items.push(["Profit Factor", stats.profitFactor.toFixed(2)]);
-      }
 
       items.forEach(([label, value]) => {
         const tile = document.createElement("div");
@@ -2498,6 +2717,22 @@ _HTML = """<!doctype html>
       const signedDelta = profitBelow100 ? -rawDelta : rawDelta;
       const sign = signedDelta > 0 ? "+" : "";
       return `${sign}${signedDelta.toFixed(2)}%`;
+    }
+
+    function formatStrategyOverlayValue(value, overlayMode) {
+      if (value == null || !Number.isFinite(Number(value))) return "";
+      const numeric = Number(value);
+      if (overlayMode === "vix") return (numeric * 100).toFixed(2);
+      return numeric.toFixed(2);
+    }
+
+    function isVisibleStrategyChartTime(ts) {
+      if (!ts) return false;
+      const etMinutes = parseHmToMinutes(formatEtHm(ts));
+      if (etMinutes == null) return false;
+      const dayStart = 7 * 60 + 30;
+      const dayEnd = 18 * 60;
+      return etMinutes >= dayStart && etMinutes < dayEnd;
     }
 
     function getSelectedStrategyChartOverlay() {
@@ -2671,6 +2906,18 @@ _HTML = """<!doctype html>
 
       const firstTrade = tradeSeries[0];
       const sampleTimes = Array.from({ length: maxSteps }, (_, i) => new Date(firstTrade.entryDate.getTime() + i * stepMs));
+      const visibleIndices = sampleTimes
+        .map((ts, idx) => (isVisibleStrategyChartTime(ts) ? idx : -1))
+        .filter((idx) => idx >= 0);
+      if (!visibleIndices.length) {
+        meta.textContent = "No intraday ET samples available for chart.";
+        return;
+      }
+
+      const compressedIndexByOriginal = new Map();
+      visibleIndices.forEach((idx, compressedIdx) => {
+        compressedIndexByOriginal.set(idx, compressedIdx);
+      });
       const allY = tradeSeries
         .flatMap((t) => t.steps)
         .concat(blended)
@@ -2689,8 +2936,12 @@ _HTML = """<!doctype html>
       const m = { top: 18, right: 56, bottom: 78, left: 56 };
       const innerW = width - m.left - m.right;
       const innerH = height - m.top - m.bottom;
-      const xMax = Math.max(1, maxSteps - 1);
-      const xScale = (x) => m.left + (x / xMax) * innerW;
+      const compressedXMax = Math.max(1, visibleIndices.length - 1);
+      const xScale = (originalIdx) => {
+        const compressedIdx = compressedIndexByOriginal.get(originalIdx);
+        if (compressedIdx == null) return null;
+        return m.left + (compressedIdx / compressedXMax) * innerW;
+      };
       const yScale = (y) => m.top + ((yMax - y) / (yMax - yMin)) * innerH;
 
       const overlayFinite = overlayValues.filter((v) => v != null && Number.isFinite(v));
@@ -2716,7 +2967,7 @@ _HTML = """<!doctype html>
           txt.setAttribute("text-anchor", "start");
           txt.setAttribute("font-size", "11");
           txt.setAttribute("fill", overlayMode === "vix" ? "#9a3412" : "#2563eb");
-          txt.textContent = value.toFixed(2);
+          txt.textContent = formatStrategyOverlayValue(value, overlayMode);
           svg.appendChild(txt);
         });
 
@@ -2787,14 +3038,46 @@ _HTML = """<!doctype html>
         svg.appendChild(baselineLabel);
       }
 
-      for (let i = 1; i < blended.length; i += 1) {
-        const a = blended[i - 1];
-        const b = blended[i];
+      const visibleDayBoundaries = [];
+      for (let i = 1; i < visibleIndices.length; i += 1) {
+        const prevIdx = visibleIndices[i - 1];
+        const currIdx = visibleIndices[i];
+        const prevKey = formatEtDateKey(sampleTimes[prevIdx]);
+        const currKey = formatEtDateKey(sampleTimes[currIdx]);
+        if (prevKey && currKey && prevKey !== currKey) {
+          visibleDayBoundaries.push(currIdx);
+        }
+      }
+      visibleDayBoundaries.forEach((idx) => {
+        const x = xScale(idx);
+        if (x == null) return;
+        const boundary = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        boundary.setAttribute("x1", String(x));
+        boundary.setAttribute("x2", String(x));
+        boundary.setAttribute("y1", String(m.top));
+        boundary.setAttribute("y2", String(m.top + innerH));
+        boundary.setAttribute("stroke", "#94a3b8");
+        boundary.setAttribute("stroke-width", "1");
+        boundary.setAttribute("stroke-dasharray", "5 5");
+        boundary.setAttribute("opacity", "0.8");
+        svg.appendChild(boundary);
+      });
+
+      const visibleBlendPts = visibleIndices
+        .map((i) => (blended[i] == null || !Number.isFinite(blended[i]) ? null : ({ x: i, y: blended[i] })))
+        .filter(Boolean);
+
+      for (let i = 1; i < visibleBlendPts.length; i += 1) {
+        const prevPoint = visibleBlendPts[i - 1];
+        const nextPoint = visibleBlendPts[i];
+        const a = prevPoint.y;
+        const b = nextPoint.y;
         if (a == null || b == null) continue;
         const isProfit = profitBelow100 ? a <= 100 : a >= 100;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        const x1 = xScale(i - 1);
-        const x2 = xScale(i);
+        const x1 = xScale(prevPoint.x);
+        const x2 = xScale(nextPoint.x);
+        if (x1 == null || x2 == null) continue;
         const y = yScale(a);
         const yBase = yScale(100);
         path.setAttribute("d", `M${x1},${yBase} L${x1},${y} L${x2},${y} L${x2},${yBase} Z`);
@@ -2804,7 +3087,7 @@ _HTML = """<!doctype html>
 
       tradeSeries.forEach((series) => {
         const pts = series.steps
-          .map((v, i) => (v == null ? null : ({ x: i, y: v })))
+          .map((v, i) => (v == null || !compressedIndexByOriginal.has(i) ? null : ({ x: i, y: v })))
           .filter(Boolean);
         if (pts.length < 2) return;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -2816,12 +3099,9 @@ _HTML = """<!doctype html>
         svg.appendChild(path);
       });
 
-      const blendPts = blended
-        .map((v, i) => (v == null ? null : ({ x: i, y: v })))
-        .filter(Boolean);
-      if (blendPts.length >= 2) {
+      if (visibleBlendPts.length >= 2) {
         const blendPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        blendPath.setAttribute("d", stepPath(blendPts, xScale, yScale));
+        blendPath.setAttribute("d", stepPath(visibleBlendPts, xScale, yScale));
         blendPath.setAttribute("fill", "none");
         blendPath.setAttribute("stroke", "#0f172a");
         blendPath.setAttribute("stroke-width", "2.4");
@@ -2830,7 +3110,7 @@ _HTML = """<!doctype html>
 
       if (overlayYScale) {
         const overlayPts = overlayValues
-          .map((v, i) => (v == null ? null : ({ x: i, y: v })))
+          .map((v, i) => (v == null || !compressedIndexByOriginal.has(i) ? null : ({ x: i, y: v })))
           .filter(Boolean);
         if (overlayPts.length >= 2) {
           const overlayPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -2866,15 +3146,16 @@ _HTML = """<!doctype html>
       function hideTooltip() {
         tooltip.classList.remove("visible");
         tooltip.innerHTML = "";
+        tooltip.style.transform = "translate(12px, -12px)";
         hoverGuide.setAttribute("opacity", "0");
         hoverMarker.setAttribute("opacity", "0");
       }
 
       function findNearestBlendedIndex(target) {
-        if (!blended.length) return -1;
+        if (!visibleIndices.length) return -1;
         let bestIdx = -1;
         let bestDist = Infinity;
-        for (let i = 0; i < blended.length; i += 1) {
+        for (const i of visibleIndices) {
           const value = blended[i];
           if (value == null || !Number.isFinite(value)) continue;
           const dist = Math.abs(i - target);
@@ -2901,8 +3182,10 @@ _HTML = """<!doctype html>
           return;
         }
 
-        const target = Math.round(((relX - m.left) / innerW) * xMax);
-        const idx = findNearestBlendedIndex(Math.max(0, Math.min(xMax, target)));
+        const targetCompressed = Math.round(((relX - m.left) / innerW) * compressedXMax);
+        const clampedCompressed = Math.max(0, Math.min(compressedXMax, targetCompressed));
+        const targetOriginal = visibleIndices[clampedCompressed];
+        const idx = findNearestBlendedIndex(targetOriginal);
         if (idx < 0) {
           hideTooltip();
           return;
@@ -2919,19 +3202,35 @@ _HTML = """<!doctype html>
         hoverMarker.setAttribute("cy", String(chartY));
         hoverMarker.setAttribute("opacity", "1");
 
-        tooltip.innerHTML = `<div class="chart-tooltip-label">${escapeHtml(formatLocalDateTime(ts))}</div><div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>`;
+        const overlayValue = overlayMode ? overlayValues[idx] : null;
+        const overlayLabel = overlayMode === "vix" ? "VIX" : "Symbol";
+        const overlayMarkup = overlayValue != null && Number.isFinite(overlayValue)
+          ? `<div class="chart-tooltip-label">${escapeHtml(overlayLabel)}: ${escapeHtml(formatStrategyOverlayValue(overlayValue, overlayMode))}</div>`
+          : "";
+        tooltip.innerHTML = `<div class="chart-tooltip-label">${escapeHtml(formatLocalDateTime(ts))}</div><div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>${overlayMarkup}`;
         tooltip.classList.add("visible");
 
-        const left = Math.min(wrapRect.width - 12, Math.max(12, event.clientX - wrapRect.left));
-        const top = Math.min(wrapRect.height - 12, Math.max(12, event.clientY - wrapRect.top));
+        const tooltipWidth = tooltip.offsetWidth || 0;
+        const tooltipHeight = tooltip.offsetHeight || 0;
+        const cursorLeft = event.clientX - wrapRect.left;
+        const cursorTop = event.clientY - wrapRect.top;
+        const spaceRight = wrapRect.width - cursorLeft;
+        const placeLeft = spaceRight < tooltipWidth + 28;
+        const left = Math.min(wrapRect.width - 12, Math.max(12, cursorLeft));
+        const top = Math.min(wrapRect.height - 12, Math.max(tooltipHeight + 12, cursorTop));
         tooltip.style.left = `${left}px`;
         tooltip.style.top = `${top}px`;
+        tooltip.style.transform = placeLeft
+          ? "translate(calc(-100% - 12px), -12px)"
+          : "translate(12px, -12px)";
       });
 
       const tickTarget = 8;
-      const tickEvery = Math.max(1, Math.ceil(maxSteps / tickTarget));
-      for (let i = 0; i < maxSteps; i += tickEvery) {
+      const tickEvery = Math.max(1, Math.ceil(visibleIndices.length / tickTarget));
+      for (let visiblePos = 0; visiblePos < visibleIndices.length; visiblePos += tickEvery) {
+        const i = visibleIndices[visiblePos];
         const x = xScale(i);
+        if (x == null) continue;
         const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
         tick.setAttribute("x1", String(x));
         tick.setAttribute("x2", String(x));
@@ -2965,6 +3264,7 @@ _HTML = """<!doctype html>
       svg.appendChild(xAxis);
 
       let metaMsg = `Blended ${tradeSeries.length} aligned trade series on a 15-minute ET grid.`;
+      metaMsg += " Overnight ET hours from 6:00 PM to 7:30 AM are visually compressed; dashed lines mark each new day.";
       if (mixedTradeTypes) {
         metaMsg += " Mixed debit/credit entries detected; shading uses reference trade semantics.";
       }
@@ -3816,6 +4116,7 @@ _HTML = """<!doctype html>
 
     function initAnalyzerTab() {
       if (tabInitState.analyzer) return;
+      if (!document.getElementById("analyzerSymbol")) return;
       tabInitState.analyzer = true;
 
       bindAnalyzerSelectionUX();
@@ -3841,5 +4142,11 @@ _HTML = """<!doctype html>
 </body>
 </html>
 """
+
+
+def _variant1_html() -> str:
+    return _HTML
+
+
 if __name__ == "__main__":
     main()

@@ -1,0 +1,268 @@
+Design Scalability Plan
+
+Purpose
+
+This document explains, in simple terms, how to move from the current embedded-HTML UI setup toward a more scalable design system using Tailwind.
+
+
+Current Situation
+
+Right now, the UI for `backtest_staging.py` is built like this:
+
+- Python serves one large HTML string
+- CSS is written manually inside that Python file
+- JavaScript is also written inside that Python file
+- There is no frontend build system
+- There is no Tailwind setup
+- There is no Tailwind component library
+
+This works for small iterations, but it gets harder to maintain as the UI grows.
+
+
+What a CDN Is
+
+A CDN is basically another server on the internet that sends your browser a file.
+
+If you use Tailwind by CDN, the browser loads Tailwind from an internet URL instead of from your own project files.
+
+That is useful for quick experiments, but it is not the best long-term setup for a real product UI.
+
+
+Can Tailwind Be Used in Static HTML?
+
+Yes.
+
+Tailwind can absolutely be used in static HTML.
+
+That means you do not need React just to use Tailwind.
+
+You can have:
+
+- plain HTML
+- plain JavaScript
+- Tailwind classes in the HTML
+
+So Tailwind itself is not the problem.
+
+The real question is whether Tailwind is being used:
+
+1. as a quick experiment through a CDN
+2. or as a proper installed part of the project
+
+
+Why the Current UI Is Not Tailwind
+
+The redesigned playground is not currently using Tailwind.
+
+It is using:
+
+- custom CSS variables
+- custom CSS classes
+- native HTML controls
+- existing custom SVG chart code
+
+That was the fastest way to improve the real app without changing the structure of the repo.
+
+But it is not a scalable Tailwind-based system yet.
+
+
+What “Scalable” Means Here
+
+A scalable setup means:
+
+- UI code is easier to edit
+- styles are easier to keep consistent
+- repeated patterns are easier to reuse
+- design changes are easier to apply across the app
+- adding more screens does not make the code messy
+
+
+Best Long-Term Direction
+
+The best long-term path is:
+
+1. Separate frontend code from the Python file
+2. Set up Tailwind properly inside the repo
+3. Rebuild the current UI using Tailwind classes
+4. Keep the backend APIs the same
+5. Add a Tailwind component library later if needed
+
+
+Recommended Migration Plan
+
+Step 1: Stop keeping the full UI inside one Python string
+
+Right now, frontend and backend are mixed together.
+
+That makes design work harder because:
+
+- HTML is harder to read
+- CSS is harder to organize
+- reusing components is harder
+- changing structure is risky
+
+Instead, move the UI into its own frontend files.
+
+
+Step 2: Create a frontend folder
+
+Example:
+
+- `frontend/`
+- `frontend/index.html`
+- `frontend/app.js`
+- `frontend/styles.css`
+
+Or, if a build setup is added:
+
+- `frontend/src/`
+- `frontend/dist/`
+
+The point is simple:
+
+- Python should serve the app
+- frontend files should define the UI
+
+
+Step 3: Install Tailwind in the project
+
+This is the important difference between “quick” and “scalable.”
+
+Scalable means:
+
+- Tailwind is installed as part of the repo
+- the CSS is generated from your own project
+- the app does not depend on pulling styling from an external CDN every time
+
+This gives you:
+
+- more control
+- cleaner versioning
+- easier future growth
+
+
+Step 4: Use Tailwind classes directly in the HTML
+
+Instead of writing lots of custom CSS rules like:
+
+- card radius
+- button padding
+- border colors
+- layout spacing
+
+You move those into the HTML using Tailwind utility classes.
+
+That makes styling more:
+
+- visible
+- systematic
+- reusable
+
+
+Step 5: Keep custom CSS only for special cases
+
+Tailwind should handle most layout and standard UI styling.
+
+Custom CSS should mostly be reserved for:
+
+- special chart styling
+- unusual visual effects
+- rare one-off design rules
+- custom brand details that Tailwind utilities do not cover well
+
+
+Step 6: Add a component library only after Tailwind is set up
+
+A Tailwind component library can help with:
+
+- buttons
+- cards
+- tabs
+- dropdown shells
+- dialogs
+- reusable form patterns
+
+But it should come after Tailwind is installed properly.
+
+Otherwise the setup gets confusing and fragile.
+
+
+Important Note About Charts
+
+Tailwind is not a charting system.
+
+Even after migration, charts will probably still be:
+
+- custom SVG
+- custom JavaScript
+- or a dedicated chart library
+
+Tailwind helps with the container and surrounding UI, not the chart logic itself.
+
+
+Recommended Practical Path for This Repo
+
+If the goal is a scalable UI system, the recommended order is:
+
+1. Extract the current page from `backtest_staging.py`
+2. Create a small frontend structure
+3. Install Tailwind properly
+4. Rebuild the existing playground using Tailwind classes
+5. Keep the current backend routes and APIs
+6. Later decide whether to add a Tailwind component library
+
+
+Why This Path Is Better Than “More CSS”
+
+If styling keeps growing directly inside the Python file, the result will become:
+
+- harder to maintain
+- harder to scale
+- harder to reason about
+
+If the UI is separated and Tailwind is installed properly, the result will become:
+
+- easier to grow
+- easier to reuse
+- easier to keep visually consistent
+- easier to extend with more pages later
+
+
+Simple Summary
+
+Current setup:
+
+- Python handles backend
+- Python also contains frontend
+- styling is custom CSS
+
+Better setup:
+
+- Python handles backend and APIs
+- frontend files handle the UI
+- Tailwind handles most styling
+- optional component library adds reusable pieces
+
+
+Plain-English Next Step
+
+The next real step is not “add more CSS.”
+
+The next real step is:
+
+- move the UI out of the Python string
+- set up Tailwind properly
+- then rebuild the page using Tailwind utilities
+
+
+Final Recommendation
+
+If the goal is speed only, the current approach can continue for a while.
+
+If the goal is a maintainable and scalable UI system, the correct move is:
+
+- separate frontend from backend
+- install Tailwind properly
+- rebuild in Tailwind
+
+That gives the cleanest foundation for future design work.

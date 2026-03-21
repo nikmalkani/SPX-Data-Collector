@@ -1129,7 +1129,7 @@ _HTML = """<!doctype html>
   <meta name="color-scheme" content="light only" />
   <meta name="supported-color-schemes" content="light" />
   <meta name="theme-color" content="#f8f7f5" />
-  <title>SPX Playground</title>
+  <title>Market Playground</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">

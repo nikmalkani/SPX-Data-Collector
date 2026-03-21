@@ -1343,6 +1343,13 @@ _HTML = """<!doctype html>
       min-width: 0;
       max-width: 100%;
     }
+    .mobile-native-field {
+      position: relative;
+      width: 100%;
+    }
+    .mobile-native-display {
+      display: none;
+    }
     select.input {
       appearance: none;
       -webkit-appearance: none;
@@ -1752,23 +1759,34 @@ _HTML = """<!doctype html>
         max-width: 100%;
       }
       @supports (-webkit-touch-callout: none) {
-        .controls-card input[type="date"],
-        .controls-card input[type="time"] {
-          width: calc(100% - 2px);
-          max-width: calc(100% - 2px);
-          box-sizing: border-box;
-          overflow: hidden;
+        .mobile-native-field {
+          position: relative;
         }
-        .controls-card input[type="date"]::-webkit-date-and-time-value,
-        .controls-card input[type="time"]::-webkit-date-and-time-value {
-          text-align: left;
-        }
-        .controls-card input[type="date"]::-webkit-datetime-edit,
-        .controls-card input[type="time"]::-webkit-datetime-edit {
-          display: block;
-          max-width: 100%;
-          padding: 0;
+        .mobile-native-display {
+          display: flex;
+          align-items: center;
+          width: 100%;
+          min-height: 56px;
+          padding: 11px 14px;
+          border: 1px solid var(--line);
+          border-radius: 16px;
+          background: var(--panel-strong);
+          color: var(--ink);
+          font-size: 0.9rem;
+          font-family: inherit;
           overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+        }
+        .mobile-native-field > input[type="date"],
+        .mobile-native-field > input[type="time"] {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          opacity: 0;
+          z-index: 2;
+          cursor: pointer;
         }
       }
       .stat-tile {
@@ -1918,16 +1936,25 @@ _HTML = """<!doctype html>
             </div>
             <div>
               <label for="strategyEntryTime">Entry Time (ET)</label><br/>
-              <input id="strategyEntryTime" class="input" type="time" value="10:30" />
+              <div class="mobile-native-field">
+                <div id="strategyEntryTimeDisplay" class="mobile-native-display" aria-hidden="true"></div>
+                <input id="strategyEntryTime" class="input" type="time" value="10:30" />
+              </div>
             </div>
             <div>
               <label for="strategySnapshotFromDate">Snapshot From</label><br/>
-              <input id="strategySnapshotFromDate" class="input" type="date" list="strategySnapshotFromDateList" />
+              <div class="mobile-native-field">
+                <div id="strategySnapshotFromDateDisplay" class="mobile-native-display" aria-hidden="true"></div>
+                <input id="strategySnapshotFromDate" class="input" type="date" list="strategySnapshotFromDateList" />
+              </div>
               <datalist id="strategySnapshotFromDateList"></datalist>
             </div>
             <div>
               <label for="strategySnapshotToDate">Snapshot To</label><br/>
-              <input id="strategySnapshotToDate" class="input" type="date" list="strategySnapshotToDateList" />
+              <div class="mobile-native-field">
+                <div id="strategySnapshotToDateDisplay" class="mobile-native-display" aria-hidden="true"></div>
+                <input id="strategySnapshotToDate" class="input" type="date" list="strategySnapshotToDateList" />
+              </div>
               <datalist id="strategySnapshotToDateList"></datalist>
             </div>
             <div>
@@ -1958,7 +1985,10 @@ _HTML = """<!doctype html>
             </div>
             <div>
               <label for="strategyExitTime">Time (ET)</label><br/>
-              <input id="strategyExitTime" class="input" type="time" value="15:30" />
+              <div class="mobile-native-field">
+                <div id="strategyExitTimeDisplay" class="mobile-native-display" aria-hidden="true"></div>
+                <input id="strategyExitTime" class="input" type="time" value="15:30" />
+              </div>
             </div>
           </div>
           <button id="strategyRunBtn" class="run-analysis-wide" style="display:none; margin-top:12px;">Run Strategy</button>
@@ -2233,6 +2263,44 @@ _HTML = """<!doctype html>
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return "";
       return `${numeric.toFixed(1)}%`;
+    }
+
+    function formatMobileStrategyDateDisplay(value) {
+      if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return "";
+      const [year, month, day] = String(value).split("-").map((part) => Number(part));
+      const date = new Date(Date.UTC(year, month - 1, day));
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: "UTC",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }).format(date);
+    }
+
+    function formatMobileStrategyTimeDisplay(value) {
+      if (!value || !/^\d{2}:\d{2}$/.test(String(value))) return "";
+      const [hours, minutes] = String(value).split(":").map((part) => Number(part));
+      const date = new Date(Date.UTC(2000, 0, 1, hours, minutes));
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: "UTC",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }).format(date);
+    }
+
+    function syncStrategyMobileNativeField(inputId, displayId, formatter) {
+      const input = document.getElementById(inputId);
+      const display = document.getElementById(displayId);
+      if (!input || !display) return;
+      display.textContent = formatter(input.value) || "";
+    }
+
+    function syncStrategyMobileNativeDisplays() {
+      syncStrategyMobileNativeField("strategyEntryTime", "strategyEntryTimeDisplay", formatMobileStrategyTimeDisplay);
+      syncStrategyMobileNativeField("strategySnapshotFromDate", "strategySnapshotFromDateDisplay", formatMobileStrategyDateDisplay);
+      syncStrategyMobileNativeField("strategySnapshotToDate", "strategySnapshotToDateDisplay", formatMobileStrategyDateDisplay);
+      syncStrategyMobileNativeField("strategyExitTime", "strategyExitTimeDisplay", formatMobileStrategyTimeDisplay);
     }
 
     function parseHmToMinutes(value) {
@@ -3904,12 +3972,19 @@ _HTML = """<!doctype html>
       document
         .getElementById("strategySymbol")
         .addEventListener("change", loadStrategySnapshotDateOptions);
+      ["strategyEntryTime", "strategySnapshotFromDate", "strategySnapshotToDate", "strategyExitTime"].forEach((id) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener("input", syncStrategyMobileNativeDisplays);
+        input.addEventListener("change", syncStrategyMobileNativeDisplays);
+      });
       document.getElementById("strategyResolveBtn").addEventListener("click", resolveStrategyLeg);
       document.getElementById("strategyRunBtn").addEventListener("click", runStrategyAnalysis);
       document.getElementById("strategyHoldToExpiry").addEventListener("change", refreshStrategyExitCriteriaState);
       refreshStrategyExitCriteriaState();
       setStrategyResultsVisibility(false);
       renderStrategyLegsTable();
+      syncStrategyMobileNativeDisplays();
     }
 
     async function loadStrategySnapshotDateOptions() {
@@ -3935,6 +4010,7 @@ _HTML = """<!doctype html>
           toList.innerHTML = "";
           fromEl.value = "";
           toEl.value = "";
+          syncStrategyMobileNativeDisplays();
           return;
         }
 
@@ -3969,6 +4045,7 @@ _HTML = """<!doctype html>
           fromEl.value = "";
           toEl.value = "";
         }
+        syncStrategyMobileNativeDisplays();
       } catch {
         strategyState.snapshotDates = [];
         strategyState.optionTypes = [];
@@ -3977,6 +4054,7 @@ _HTML = """<!doctype html>
         toList.innerHTML = "";
         fromEl.value = "";
         toEl.value = "";
+        syncStrategyMobileNativeDisplays();
       }
     }
 

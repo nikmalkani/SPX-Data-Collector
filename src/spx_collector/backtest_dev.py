@@ -224,6 +224,21 @@ def _run_snapshot_dates_payload(conn: sqlite3.Connection, *, symbol: str) -> dic
     return {"dates": [str(row[0]) for row in rows if row[0]]}
 
 
+def _run_option_types_payload(conn: sqlite3.Connection, *, symbol: str) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT option_type
+        FROM spx_option_snapshots
+        WHERE symbol = ?
+          AND option_type IS NOT NULL
+          AND TRIM(option_type) <> ''
+        ORDER BY option_type ASC
+        """,
+        [symbol],
+    ).fetchall()
+    return {"option_types": [str(row[0]).upper() for row in rows if row[0]]}
+
+
 def _run_resolve_leg_payload(
     conn: sqlite3.Connection,
     *,
@@ -238,6 +253,7 @@ def _run_resolve_leg_payload(
     snapshot_to: datetime | None = None,
     window_minutes: int = 5,
     strict_dte: bool = False,
+    best_only: bool = False,
 ) -> dict[str, Any]:
     opt_type = option_type.upper()
     if opt_type not in {"PUT", "CALL"}:
@@ -295,11 +311,12 @@ def _run_resolve_leg_payload(
             CASE WHEN CAST(strftime('%s', snapshot_ts) AS INTEGER) <= ? THEN 0 ELSE 1 END AS is_after
         FROM spx_option_snapshots
         WHERE symbol = ?
-          AND UPPER(option_type) = ?
+          AND option_type = ?
           AND dte BETWEEN ? AND ?
           AND delta IS NOT NULL
           AND snapshot_ts BETWEEN ? AND ?
         ORDER BY time_diff ASC, is_after ASC, delta_diff ASC, dte_diff ASC, strike_price ASC
+        {"LIMIT 1" if best_only else ""}
         """,
             [
             normalized_delta,
@@ -314,6 +331,9 @@ def _run_resolve_leg_payload(
             window_to,
             ],
         ).fetchall()
+
+        if best_only:
+            return rows
 
         by_streamer: dict[str, Any] = {}
         for row in rows:
@@ -375,6 +395,11 @@ def _run_resolve_leg_payload(
 
     # Keep top-level contract keys for backward compatibility while adding full match set.
     best = contracts[0]
+    if best_only:
+        return {
+            **best,
+            "count": len(contracts),
+        }
     return {
         **best,
         "count": len(contracts),
@@ -403,7 +428,7 @@ def _run_contracts_payload(
         clauses.append("snapshot_ts <= ?")
         params.append(_sqlite_timestamp(end_dt))
     if option_type:
-        clauses.append("UPPER(option_type) = ?")
+        clauses.append("option_type = ?")
         params.append(option_type.upper())
     if min_strike is not None:
         clauses.append("strike_price >= ?")
@@ -908,6 +933,18 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 _error_response(self, str(exc))
             return
+        if path == "/api/options/option-types":
+            try:
+                symbol = _get_qs(qs, "symbol", "SPX")
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    payload = _run_option_types_payload(
+                        conn, symbol=symbol or "SPX"
+                    )
+                _json_response(self, payload)
+            except Exception as exc:
+                _error_response(self, str(exc))
+            return
         if path == "/api/options/resolve-leg":
             try:
                 symbol = _get_qs(qs, "symbol", "SPX")
@@ -924,6 +961,8 @@ class SqlUiHandler(BaseHTTPRequestHandler):
                 window_minutes = _parse_int(_get_qs(qs, "window_minutes"), "window_minutes", 5)
                 strict_dte_raw = (_get_qs(qs, "strict_dte") or "").strip().lower()
                 strict_dte = strict_dte_raw in {"1", "true", "yes", "on"}
+                best_only_raw = (_get_qs(qs, "best_only") or "").strip().lower()
+                best_only = best_only_raw in {"1", "true", "yes", "on"}
                 with sqlite3.connect(self.db_path) as conn:
                     conn.row_factory = sqlite3.Row
                     payload = _run_resolve_leg_payload(
@@ -939,6 +978,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
                         snapshot_to=snapshot_to,
                         window_minutes=window_minutes,
                         strict_dte=strict_dte,
+                        best_only=best_only,
                     )
                 _json_response(self, payload)
             except Exception as exc:
@@ -1026,40 +1066,147 @@ _HTML = """<!doctype html>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --ink: #0f172a;
-      --bg: #f7f8fa;
-      --panel: #ffffff;
-      --line: #e2e8f0;
-      --accent: #0d9488;
-      --accent2: #0ea5e9;
-      --muted: #64748b;
+      --ink: #1c1917;
+      --ink-soft: #44403c;
+      --bg: #f8f7f5;
+      --panel: rgba(255, 255, 255, 0.92);
+      --panel-strong: #ffffff;
+      --panel-muted: #f4f2ef;
+      --line: rgba(28, 25, 23, 0.1);
+      --accent: rgba(255, 71, 43, 1);
+      --accent-strong: rgba(217, 54, 29, 1);
+      --accent-soft: rgba(255, 227, 221, 1);
+      --muted: #6b625a;
+      --success: #166534;
+      --danger: #b91c1c;
+      --shadow-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 18px 40px rgba(28, 25, 23, 0.06);
+      --shadow-float: 0 24px 60px rgba(28, 25, 23, 0.12);
     }
 
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Space Grotesk", sans-serif;
+      font-family: "Plus Jakarta Sans", sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(1200px 420px at 0% 0%, #d1fae5 0%, transparent 50%),
-        radial-gradient(900px 360px at 100% 0%, #e0f2fe 0%, transparent 45%),
+        radial-gradient(80rem 32rem at 0% 0%, rgba(251, 146, 60, 0.18) 0%, transparent 55%),
+        radial-gradient(64rem 28rem at 100% 0%, rgba(120, 113, 108, 0.14) 0%, transparent 50%),
         var(--bg);
+      min-height: 100vh;
     }
     .wrap {
-      max-width: 1400px;
+      max-width: 1440px;
       margin: 0 auto;
-      padding: 22px;
+      padding: 24px;
     }
     h1, h2, h3 {
       margin-top: 0;
+      margin-bottom: 0;
     }
-    h1 { font-size: 2rem; letter-spacing: -0.02em; }
-    .sub { color: var(--muted); margin-top: 6px; }
+    h1 {
+      font-size: clamp(2.1rem, 3vw, 3.35rem);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+      word-spacing: 0.04em;
+      max-width: none;
+      white-space: nowrap;
+    }
+    h2 { font-size: 1.15rem; letter-spacing: -0.02em; }
+    .app-shell { position: relative; z-index: 1; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 14px 22px 16px;
+      background:
+        linear-gradient(135deg, rgba(28, 25, 23, 0.96), rgba(68, 64, 60, 0.88)),
+        radial-gradient(32rem 18rem at 100% 0%, rgba(251, 146, 60, 0.22), transparent 60%);
+      color: #fafaf9;
+      box-shadow: var(--shadow-float);
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff7ed;
+      font-size: 0.92rem;
+      font-family: inherit;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      box-shadow: 0 12px 24px rgba(234, 88, 12, 0.24);
+    }
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .eyebrow {
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255, 237, 213, 0.82);
+    }
+    .brand-title {
+      font-size: 1.7rem;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      color: #fafaf9;
+    }
+    .hero-grid {
+      display: block;
+    }
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: none;
+      align-items: center;
+      text-align: center;
+    }
+    .sub {
+      margin-top: 0;
+      max-width: 54ch;
+      color: rgba(245, 245, 244, 0.72);
+      line-height: 1.7;
+      font-size: 1rem;
+    }
+    .hero-note {
+      font-size: 0.88rem;
+      color: rgba(245, 245, 244, 0.62);
+      max-width: 48ch;
+      line-height: 1.6;
+    }
+    .surface {
+      margin-top: 22px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      background: rgba(255, 255, 255, 0.56);
+      backdrop-filter: blur(12px);
+    }
     .grid {
       display: grid;
       grid-template-columns: 1.4fr 1fr;
-      gap: 14px;
-      margin-top: 16px;
+      gap: 18px;
+      margin-top: 18px;
     }
     .grid.full {
       grid-template-columns: 1fr;
@@ -1067,85 +1214,116 @@ _HTML = """<!doctype html>
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 14px;
-      box-shadow: 0 6px 20px rgba(15,23,42,0.04);
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: var(--shadow-card);
       overflow: hidden;
+      backdrop-filter: blur(10px);
     }
     textarea {
       width: 100%;
       min-height: 150px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px;
+      border-radius: 16px;
+      padding: 14px 16px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.92rem;
       resize: vertical;
+      background: var(--panel-strong);
+      color: var(--ink);
     }
     .row {
       display: flex;
-      gap: 10px;
-      margin-top: 10px;
+      gap: 12px;
+      margin-top: 12px;
       flex-wrap: wrap;
       align-items: center;
     }
     button, select {
       border: 0;
-      border-radius: 10px;
-      padding: 9px 14px;
-      font-weight: 700;
+      border-radius: 16px;
+      padding: 11px 16px;
+      font-weight: 600;
       color: #fff;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       cursor: pointer;
       font-family: inherit;
+      transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease, background 160ms ease;
+      box-shadow: 0 10px 24px rgba(234, 88, 12, 0.2);
     }
-    .secondary {
-      background: #334155;
+    button:hover, select:hover { transform: translateY(-1px); }
+    select.input {
+      box-shadow: 0 4px 12px rgba(234, 88, 12, 0.08);
     }
+    button:focus-visible, select:focus-visible, .input:focus-visible, textarea:focus-visible {
+      outline: 2px solid rgba(251, 146, 60, 0.45);
+      outline-offset: 2px;
+    }
+    .secondary { background: linear-gradient(135deg, #57534e, #292524); box-shadow: 0 10px 24px rgba(41, 37, 36, 0.16); }
     .input {
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px 10px;
-      background: #fff;
+      border-radius: 16px;
+      padding: 11px 14px;
+      background: var(--panel-strong);
       color: var(--ink);
       font-size: 0.9rem;
       font-family: inherit;
+      width: 100%;
     }
-    label { font-size: 0.9rem; color: #1e293b; }
+    select.input {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      padding-right: 44px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.25 5.5L7 9.25L10.75 5.5' stroke='%236b625a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+      background-size: 14px 14px;
+    }
+    label {
+      display: inline-block;
+      margin-bottom: 8px;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
     .meta {
       color: var(--muted);
-      font-size: 0.9rem;
+      font-size: 0.92rem;
+      line-height: 1.6;
     }
     .result-wrap {
       margin-top: 14px;
       max-height: 520px;
       overflow: auto;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.94);
       padding-bottom: 10px;
       scrollbar-gutter: stable both-edges;
     }
     .chart-wrap {
       margin-top: 12px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.94);
       overflow: hidden;
       position: relative;
-      padding: 10px;
+      padding: 14px;
     }
     .chart-svg {
       width: 100%;
       height: 320px;
       display: block;
-      background: #ffffff;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,242,239,0.92));
       cursor: crosshair;
+      border-radius: 16px;
     }
     .chart-tooltip {
       position: absolute;
-      min-width: 126px;
-      max-width: 187px;
+      min-width: 180px;
+      max-width: 240px;
       padding: 8px 10px;
       border-radius: 10px;
       background: rgba(15, 23, 42, 0.94);
@@ -1158,7 +1336,7 @@ _HTML = """<!doctype html>
       transform: translate(12px, -12px);
       transition: opacity 120ms ease;
       z-index: 2;
-      white-space: nowrap;
+      white-space: normal;
     }
     .chart-tooltip.visible {
       opacity: 1;
@@ -1167,22 +1345,30 @@ _HTML = """<!doctype html>
       color: #cbd5e1;
       margin-bottom: 2px;
     }
+    .chart-tooltip-debug {
+      color: #e2e8f0;
+      font-size: 0.72rem;
+      margin-top: 4px;
+    }
     .chart-tooltip-value {
       font-weight: 700;
       text-align: center;
     }
     .chart-legend {
       display: flex;
-      gap: 14px;
+      gap: 12px;
       flex-wrap: wrap;
-      margin-top: 8px;
-      font-size: 0.85rem;
-      color: #334155;
+      margin-top: 14px;
+      font-size: 0.82rem;
+      color: var(--ink-soft);
     }
     .chart-legend-item {
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: var(--panel-muted);
     }
     .chart-card-header {
       display: flex;
@@ -1198,7 +1384,10 @@ _HTML = """<!doctype html>
       justify-content: flex-end;
       margin-left: auto;
       font-size: 0.82rem;
-      color: #475569;
+      color: var(--ink-soft);
+      padding: 6px;
+      border-radius: 999px;
+      background: var(--panel-muted);
     }
     .chart-toggle-option {
       display: inline-flex;
@@ -1208,6 +1397,68 @@ _HTML = """<!doctype html>
     }
     .chart-toggle-option input {
       margin: 0;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .stat-tile {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,242,239,0.92));
+      padding: 16px;
+    }
+    .stat-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+    .stat-value {
+      margin-top: 10px;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .meta-emphasis {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--panel-muted);
+      color: var(--ink-soft);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      vertical-align: middle;
+    }
+    .section-heading {
+      grid-column: 1 / -1;
+      margin: 10px 0 0;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+    .field-disabled {
+      opacity: 0.45;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
     }
     .chart-legend-swatch {
       width: 14px;
@@ -1222,19 +1473,23 @@ _HTML = """<!doctype html>
     }
     th, td {
       border-bottom: 1px solid var(--line);
-      padding: 8px 10px;
+      padding: 11px 12px;
       text-align: left;
       white-space: nowrap;
     }
     th {
       position: sticky;
       top: 0;
-      background: #f8fafc;
+      background: rgba(244, 242, 239, 0.96);
       z-index: 1;
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
     }
     .strategy-summary {
-      background: #f1f5f9;
-      font-weight: 700;
+      background: var(--accent-soft);
+      font-weight: 600;
     }
     .schema-block {
       margin-top: 10px;
@@ -1244,28 +1499,32 @@ _HTML = """<!doctype html>
     .controls-card {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      gap: 14px;
     }
     .analyzer-filter-row {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      gap: 14px;
       grid-column: 1 / -1;
     }
     .controls-card .full { grid-column: 1 / -1; }
     .controls-card select[multiple] {
+      appearance: auto;
+      -webkit-appearance: auto;
+      -moz-appearance: auto;
       height: 260px;
-      padding: 6px;
+      padding: 10px;
       font-family: inherit;
-      border-radius: 10px;
+      border-radius: 16px;
       border: 1px solid var(--line);
-      background: #fff;
+      background: var(--panel-strong);
+      background-image: none;
       color: var(--ink);
     }
     select option { padding: 4px; }
     .small {
       font-size: 0.85rem;
-      color: #475569;
+      color: var(--ink-soft);
     }
     .status {
       font-size: 0.9rem;
@@ -1273,23 +1532,24 @@ _HTML = """<!doctype html>
       min-height: 1.25rem;
     }
     .success { color: #0369a1; }
-    .danger { color: #b91c1c; }
+    .danger { color: var(--danger); }
     .run-analysis-wide {
       width: 100%;
-      margin-top: 10px;
-      background: #16a34a;
+      margin-top: 12px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
     }
     .remove-leg {
       border: 0;
       background: transparent;
-      color: #94a3b8;
+      color: var(--muted);
       font-weight: 700;
       cursor: pointer;
       padding: 0 4px;
       font-size: 1rem;
       line-height: 1;
+      box-shadow: none;
     }
-    .remove-leg:hover { color: #64748b; }
+    .remove-leg:hover { color: var(--ink); transform: none; }
     .side-group {
       display: inline-flex;
       gap: 6px;
@@ -1305,32 +1565,41 @@ _HTML = """<!doctype html>
       opacity: 0.55;
     }
     .side-btn.active { opacity: 1; }
-    .buy-btn { background: #166534; }
-    .sell-btn { background: #b91c1c; }
+    .buy-btn { background: var(--success); }
+    .sell-btn { background: var(--danger); }
     .qty-input {
       width: 100px;
     }
     .tab-nav {
-      display: flex;
-      gap: 10px;
-      margin: 14px 0;
-      flex-wrap: wrap;
+      display: block;
+      margin: 0 0 8px;
+    }
+    .tab-heading {
+      display: inline-block;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+      padding: 6px 2px 2px;
     }
     .tab-button {
       border: 1px solid var(--line);
-      background: #fff;
+      background: transparent;
       color: var(--ink);
       font-weight: 500;
       opacity: 0.8;
+      box-shadow: none;
+      min-width: 172px;
     }
     .tab-button.active {
       color: #fff;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       opacity: 1;
+      box-shadow: 0 12px 24px rgba(234, 88, 12, 0.18);
     }
     .tab-panel {
       display: none;
-      margin-top: 0;
+      margin-top: 24px;
     }
     .tab-panel.active {
       display: block;
@@ -1340,144 +1609,210 @@ _HTML = """<!doctype html>
       from { opacity: 0; transform: translateY(3px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #f8f7f5;
+        --ink-soft: rgba(248, 247, 245, 0.78);
+        --bg: #171615;
+        --panel: rgba(33, 30, 27, 0.92);
+        --panel-strong: #211e1b;
+        --panel-muted: #2b2622;
+        --line: rgba(255, 255, 255, 0.09);
+        --muted: rgba(248, 247, 245, 0.58);
+        --shadow-card: 0 1px 2px rgba(0,0,0,0.22), 0 18px 40px rgba(0,0,0,0.24);
+        --shadow-float: 0 24px 60px rgba(0,0,0,0.34);
+      }
+      body {
+        background:
+          radial-gradient(80rem 32rem at 0% 0%, rgba(251, 146, 60, 0.12) 0%, transparent 55%),
+          radial-gradient(64rem 28rem at 100% 0%, rgba(120, 113, 108, 0.1) 0%, transparent 50%),
+          var(--bg);
+      }
+      .surface,
+      .tab-nav { background: rgba(33, 30, 27, 0.72); }
+      th { background: rgba(43, 38, 34, 0.96); }
+      .chart-svg,
+      .chart-wrap,
+      .result-wrap,
+      .stat-tile { background: var(--panel-strong); }
+    }
     @media (max-width: 1100px) {
       .grid { grid-template-columns: 1fr; }
       .controls-card { grid-template-columns: 1fr; }
       .controls-card .full { grid-column: auto; }
-      .tab-nav { gap: 8px; }
-      .tab-button { width: 100%; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .tab-nav { width: 100%; }
+      .tab-button { width: 100%; min-width: 0; }
+      .hero { padding: 14px 18px; }
+    }
+    @media (max-width: 720px) {
+      .wrap { padding: 16px; }
+      .hero { border-radius: 20px; }
+      .surface { padding: 14px; border-radius: 24px; }
+      .card { padding: 16px; border-radius: 20px; }
+      .brand-mark {
+        width: 36px;
+        height: 36px;
+        font-size: 0.82rem;
+      }
+      .brand-title { font-size: 1.35rem; }
+      h1 {
+        white-space: normal;
+        max-width: 10ch;
+      }
+      .stats-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>SPX Playground</h1>
-    <div class="sub">Run read-only SQL against your local collector DB, and analyze option movement by contract.</div>
-    <div class="tab-nav">
-      <button type="button" class="tab-button active" data-tab="strategy">Strategy</button>
-      <button type="button" class="tab-button" data-tab="analyzer">Options Analyzer</button>
-      <button type="button" class="tab-button" data-tab="sql">SQL Lab</button>
-    </div>
-
-    <section id="tab-strategy" class="tab-panel active" data-tab="strategy">
-      <div class="grid full">
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Strategy</h2>
-          <div class="meta">Build and run strategy legs.</div>
-          <div class="controls-card" style="margin-top:10px;">
-            <div>
-              <label for="strategySymbol">Symbol</label><br/>
-              <select id="strategySymbol" class="input">
-                <option value="SPX">SPX</option>
-              </select>
-            </div>
-            <div>
-              <label for="strategySide">Side</label><br/>
-              <select id="strategySide" class="input">
-                <option value="BUY">BUY</option>
-                <option value="SELL">SELL</option>
-              </select>
-            </div>
-            <div>
-              <label for="strategyOptionType">Option Type</label><br/>
-              <select id="strategyOptionType" class="input">
-                <option value="PUT">PUT</option>
-                <option value="CALL">CALL</option>
-              </select>
-            </div>
-            <div>
-              <label for="strategyDte">DTE</label><br/>
-              <input id="strategyDte" class="input" type="number" min="0" step="1" value="1" />
-            </div>
-            <div>
-              <label for="strategyDelta">Target Delta</label><br/>
-              <input id="strategyDelta" class="input" type="number" min="0" step="1" value="35" />
-            </div>
-            <div>
-              <label for="strategyEntryTime">Entry Time (ET)</label><br/>
-              <input id="strategyEntryTime" class="input" type="time" value="10:30" />
-            </div>
-            <div>
-              <label for="strategySnapshotFromDate">Snapshot From</label><br/>
-              <input id="strategySnapshotFromDate" class="input" type="date" list="strategySnapshotFromDateList" />
-              <datalist id="strategySnapshotFromDateList"></datalist>
-            </div>
-            <div>
-              <label for="strategySnapshotToDate">Snapshot To</label><br/>
-              <input id="strategySnapshotToDate" class="input" type="date" list="strategySnapshotToDateList" />
-              <datalist id="strategySnapshotToDateList"></datalist>
-            </div>
-            <div>
-              <label>&nbsp;</label><br/>
-              <button id="strategyResolveBtn" class="run-analysis-wide">Add leg</button>
-            </div>
+  <div class="wrap app-shell">
+    <section class="hero">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-mark">MP</div>
+          <div class="brand-copy">
+            <span class="brand-title">Market&nbsp;&nbsp;Playground</span>
           </div>
-          <div id="strategyBuilderMeta" class="meta" style="margin-top:4px;">Resolve a leg to add it to the strategy.</div>
-          <div class="result-wrap" style="margin-top:12px;">
-            <table id="strategyLegsTable">
-              <thead>
-                <tr>
-                  <th></th><th>Leg</th><th>Side</th><th>Quantity</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <button id="strategyRunBtn" class="run-analysis-wide" style="display:none; margin-top:12px;">Run Analysis</button>
-          <div id="strategyAnalysisMeta" class="meta" style="margin-top:4px;">Resolve at least one leg to analyze.</div>
         </div>
       </div>
-
-      <div class="grid full">
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Strategy Time Series</h2>
-          <div id="strategySeriesMeta" class="meta">Resolved legs only.</div>
-          <div class="result-wrap" style="margin-top:12px;">
-            <table id="strategySeriesTable">
-              <thead>
-                <tr>
-                  <th>Snapshot</th><th>Trade</th><th>Contract</th><th>Leg</th><th>Side</th><th>Spot</th><th>Price</th><th>Indexed</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Vol</th><th>Spread</th><th>Leg Contribution</th><th>Strategy</th><th>Strategy Cost</th><th>Strategy P&L</th><th>Strategy Indexed</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Strategy Trade Matrix</h2>
-          <div class="meta">One row per trade, aligned at entry (T+0=100). Columns show indexed strategy progression by snapshot step.</div>
-          <div class="result-wrap" style="margin-top:12px;">
-            <table id="strategyTradeMatrixTable">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="card">
-          <div class="chart-card-header">
-            <h2 style="margin-bottom: 6px;">Strategy Index Chart</h2>
-            <div class="chart-toggle-group" aria-label="Strategy chart overlay toggles">
-              <label class="chart-toggle-option"><input type="checkbox" name="strategyChartOverlayToggle" value="symbol" /> Symbol</label>
-              <label class="chart-toggle-option"><input type="checkbox" name="strategyChartOverlayToggle" value="vix" /> VIX Price</label>
-            </div>
-          </div>
-          <div id="strategyIndexChartMeta" class="meta">Aligned at entry (T+0). 15-minute ET interpolation with blended average.</div>
-          <div class="chart-wrap">
-            <svg id="strategyIndexChartSvg" class="chart-svg" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
-            <div id="strategyIndexChartTooltip" class="chart-tooltip" aria-hidden="true"></div>
-          </div>
-          <div class="chart-legend">
-            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#cbd5e1;"></span>Trade lines</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#0f172a;"></span>Blended avg</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#94a3b8;"></span>100 baseline</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:rgba(22,163,74,0.24);"></span>Profit zone</span>
-            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:rgba(220,38,38,0.22);"></span>Loss zone</span>
-          </div>
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <h1>Explore, interact, and discover</h1>
         </div>
       </div>
     </section>
+    <div class="surface">
+      <div class="tab-nav">
+        <button type="button" class="tab-button active" data-tab="strategy">Strategy Replay</button>
+        <button type="button" class="tab-button" data-tab="analyzer">Options Analyzer</button>
+        <button type="button" class="tab-button" data-tab="sql">SQL Lab</button>
+      </div>
 
-    <section id="tab-analyzer" class="tab-panel" data-tab="analyzer">
+      <section id="tab-strategy" class="tab-panel active" data-tab="strategy">
+        <div class="grid full">
+          <div class="card">
+            <h2 style="margin-bottom: 6px;">Strategy</h2>
+            <div class="meta">Build and run strategy legs.</div>
+            <div class="controls-card" style="margin-top:10px;">
+              <div>
+                <label for="strategySymbol">Symbol</label><br/>
+                <select id="strategySymbol" class="input">
+                  <option value="SPX">SPX</option>
+                </select>
+              </div>
+              <div>
+                <label for="strategySide">Side</label><br/>
+                <select id="strategySide" class="input">
+                  <option value="BUY">BUY</option>
+                  <option value="SELL">SELL</option>
+                </select>
+              </div>
+              <div>
+                <label for="strategyOptionType">Option Type</label><br/>
+                <select id="strategyOptionType" class="input">
+                  <option value="PUT">PUT</option>
+                  <option value="CALL">CALL</option>
+                </select>
+              </div>
+              <div class="section-heading">Entry Criteria</div>
+              <div>
+                <label for="strategyDte">DTE</label><br/>
+                <input id="strategyDte" class="input" type="number" min="0" step="1" value="1" />
+              </div>
+              <div>
+                <label for="strategyDelta">Delta</label><br/>
+                <input id="strategyDelta" class="input" type="number" min="0" step="1" value="35" />
+              </div>
+              <div>
+                <label for="strategyEntryTime">Entry Time (ET)</label><br/>
+                <input id="strategyEntryTime" class="input" type="time" value="10:30" />
+              </div>
+              <div>
+                <label for="strategySnapshotFromDate">Snapshot From</label><br/>
+                <input id="strategySnapshotFromDate" class="input" type="date" list="strategySnapshotFromDateList" />
+                <datalist id="strategySnapshotFromDateList"></datalist>
+              </div>
+              <div>
+                <label for="strategySnapshotToDate">Snapshot To</label><br/>
+                <input id="strategySnapshotToDate" class="input" type="date" list="strategySnapshotToDateList" />
+                <datalist id="strategySnapshotToDateList"></datalist>
+              </div>
+              <div>
+                <label>&nbsp;</label><br/>
+                <button id="strategyResolveBtn" class="run-analysis-wide">Add leg</button>
+              </div>
+            </div>
+            <div id="strategyBuilderMeta" class="meta" style="margin-top:4px;">Resolve a leg to add it to the strategy.</div>
+            <div class="result-wrap" style="margin-top:12px;">
+              <table id="strategyLegsTable">
+                <thead>
+                  <tr>
+                    <th></th><th>Leg</th><th>Side</th><th>Quantity</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="controls-card" style="margin-top:12px;">
+              <div class="section-heading">Exit Criteria</div>
+              <div class="checkbox-row">
+                <input id="strategyHoldToExpiry" type="checkbox" checked />
+                <label for="strategyHoldToExpiry">Hold till expiry</label>
+              </div>
+              <div>
+                <label for="strategyExitDays">Exit After (days)</label><br/>
+                <input id="strategyExitDays" class="input" type="number" min="0" step="1" value="0" />
+              </div>
+              <div>
+                <label for="strategyExitTime">Time (ET)</label><br/>
+                <input id="strategyExitTime" class="input" type="time" value="15:30" />
+              </div>
+            </div>
+            <button id="strategyRunBtn" class="run-analysis-wide" style="display:none; margin-top:12px;">Run Strategy</button>
+            <div id="strategyAnalysisMeta" class="meta" style="margin-top:4px;">Resolve at least one leg to analyze.</div>
+          </div>
+        </div>
+
+        <div class="grid full">
+          <div class="card">
+            <h2 style="margin-bottom: 6px;">Strategy Stats</h2>
+            <div id="strategyStatsMeta" class="meta">Run analysis to compute trade-level summary stats.</div>
+            <div id="strategyStatsGrid" class="stats-grid"></div>
+          </div>
+          <div class="card">
+            <h2 style="margin-bottom: 6px;">Strategy Time Series</h2>
+            <div id="strategySeriesMeta" class="meta">Resolved legs only.</div>
+            <div class="result-wrap" style="margin-top:12px;">
+              <table id="strategySeriesTable">
+                <thead>
+                  <tr>
+                    <th>Snapshot</th><th>Trade</th><th>Contract</th><th>Leg</th><th>Side</th><th>Spot</th><th>Price</th><th>Indexed</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Vol</th><th>Spread</th><th>Leg Contribution</th><th>Strategy</th><th>Strategy Cost</th><th>Strategy P&L</th><th>Strategy Indexed</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="chart-card-header">
+              <h2 style="margin-bottom: 6px;">Strategy Index Chart</h2>
+            </div>
+            <div id="strategyIndexChartMeta" class="meta">Aligned at entry (T+0). 15-minute ET interpolation with blended average.</div>
+            <div class="chart-wrap">
+              <svg id="strategyIndexChartSvg" class="chart-svg" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
+              <div id="strategyIndexChartTooltip" class="chart-tooltip" aria-hidden="true"></div>
+            </div>
+            <div class="chart-legend">
+              <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#0f172a;"></span>Blended avg</span>
+              <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#94a3b8;"></span>Strategy cost</span>
+              <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:rgba(22,163,74,0.24);"></span>Profit zone</span>
+              <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:rgba(220,38,38,0.22);"></span>Loss zone</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-analyzer" class="tab-panel" data-tab="analyzer">
       <div class="grid">
         <div class="card">
           <h2 style="margin-bottom: 6px;">Options Analyzer</h2>
@@ -1579,7 +1914,7 @@ LIMIT 100;</textarea>
 
   <script>
     const MAX_ANALYZER_SELECTED_CONTRACTS = 4;
-    const MAX_STRATEGY_RESOLVED_CONTRACTS = 30;
+    const MAX_STRATEGY_RESOLVED_CONTRACTS = 50;
     const MAX_STRATEGY_ANALYSIS_STREAMERS = 120;
     const MINUTE_DIFF_LABEL = 60;
 
@@ -1588,10 +1923,10 @@ LIMIT 100;</textarea>
       legs: [],
       nextLegId: 1,
       snapshotDates: [],
+      optionTypes: [],
       tableRows: [],
       historyRows: [],
       lastMeta: "",
-      chartOverlay: "",
     };
 
     const tabInitState = {
@@ -1662,6 +1997,34 @@ LIMIT 100;</textarea>
       if (!Number.isFinite(numeric)) return "";
       const normalized = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
       return String(Math.round(normalized));
+    }
+
+    function formatStrategyIndexAxisLabel(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "";
+      return `${numeric.toFixed(1)}%`;
+    }
+
+    function formatStatAmount(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "";
+      return `$${(numeric * 100).toFixed(2)}`;
+    }
+
+    function formatStatPercent(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "";
+      return `${numeric.toFixed(1)}%`;
+    }
+
+    function parseHmToMinutes(value) {
+      const raw = String(value || "").trim();
+      const match = raw.match(/^(\d{2}):(\d{2})$/);
+      if (!match) return null;
+      const hours = Number(match[1]);
+      const minutes = Number(match[2]);
+      if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+      return hours * 60 + minutes;
     }
 
     function formatLocalDateTime(value) {
@@ -1851,6 +2214,21 @@ LIMIT 100;</textarea>
       return `${type} Δ${delta} DTE ${dte} @ ${entry}`;
     }
 
+    function populateStrategyOptionTypeOptions(optionTypes) {
+      const selectEl = document.getElementById("strategyOptionType");
+      if (!selectEl) return;
+      const values = (Array.isArray(optionTypes) ? optionTypes : [])
+        .map((value) => String(value || "").trim().toUpperCase())
+        .filter((value, index, arr) => value && arr.indexOf(value) === index);
+      const selected = String(selectEl.value || "").trim().toUpperCase();
+      const normalized = values.length ? values : ["PUT"];
+      selectEl.innerHTML = normalized
+        .map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`)
+        .join("");
+      selectEl.value = normalized.includes(selected) ? selected : normalized[0];
+      strategyState.optionTypes = normalized;
+    }
+
     function hasMatchingStrategyLeg(candidate) {
       return strategyState.legs.some((leg) => (
         String(leg.side || "BUY") === String(candidate.side || "BUY")
@@ -1861,6 +2239,21 @@ LIMIT 100;</textarea>
         && String(leg.snapshot_from_date || "") === String(candidate.snapshot_from_date || "")
         && String(leg.snapshot_to_date || "") === String(candidate.snapshot_to_date || "")
       ));
+    }
+
+    function refreshStrategyExitCriteriaState() {
+      const holdEl = document.getElementById("strategyHoldToExpiry");
+      const exitDaysEl = document.getElementById("strategyExitDays");
+      const exitTimeEl = document.getElementById("strategyExitTime");
+      if (!holdEl || !exitDaysEl || !exitTimeEl) return;
+      const disabled = Boolean(holdEl.checked);
+      exitDaysEl.disabled = disabled;
+      exitTimeEl.disabled = disabled;
+      const wrappers = [exitDaysEl.parentElement, exitTimeEl.parentElement];
+      wrappers.forEach((wrapper) => {
+        if (!wrapper) return;
+        wrapper.classList.toggle("field-disabled", disabled);
+      });
     }
 
     function refreshStrategyRunButtonVisibility() {
@@ -2003,6 +2396,7 @@ LIMIT 100;</textarea>
       });
       params.set("snapshot_from", `${effectiveFromDate}T00:00:00`);
       params.set("snapshot_to", `${effectiveToDate}T23:59:59`);
+      params.set("best_only", "1");
 
       meta.textContent = "Resolving leg...";
       meta.className = "meta";
@@ -2034,7 +2428,7 @@ LIMIT 100;</textarea>
         snapshot_from_date: effectiveFromDate,
         snapshot_to_date: effectiveToDate,
         isResolved: true,
-        matched_count: keptContracts.length,
+        matched_count: Number(payload.count) > 0 ? Number(payload.count) : keptContracts.length,
         entry_snapshot_ts: keptContracts[0] ? keptContracts[0].snapshot_ts : null,
         resolved_contracts: keptContracts,
       });
@@ -2044,7 +2438,7 @@ LIMIT 100;</textarea>
       renderStrategyLegsTable();
     }
 
-    function transformStrategySeriesRows(rows, spotSeries, tradePlans) {
+    function transformStrategySeriesRows(rows, spotSeries, tradePlans, exitCriteria) {
       const nearestSpot = buildSpotLookup(spotSeries || []);
       const nearestVix = buildVixLookup(spotSeries || []);
       const rowsByStreamer = new Map();
@@ -2101,15 +2495,46 @@ LIMIT 100;</textarea>
           .filter((ts) => ts && Number.isFinite(ts.getTime()))
           .map((ts) => ts.getTime());
         const tradeStartTs = entryTimes.length ? new Date(Math.max(...entryTimes)) : null;
-        return { ...trade, legs, trade_start_ts: tradeStartTs };
+        const expirations = legs
+          .map((leg) => String(leg.contract && leg.contract.expiration_date ? leg.contract.expiration_date : ""))
+          .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+          .sort();
+        const strategyExpirationYmd = expirations.length ? expirations[0] : "";
+        return { ...trade, legs, trade_start_ts: tradeStartTs, strategy_expiration_ymd: strategyExpirationYmd };
+      });
+
+      const completedTrades = enrichedTrades.filter((trade) => {
+        if (!trade.trade_start_ts) return false;
+        return allTimestamps.some((ts) => {
+          const currentTs = parseTimestamp(ts);
+          if (!currentTs || currentTs < trade.trade_start_ts) return false;
+          if (exitCriteria.holdTillExpiry) {
+            if (!isAtOrAfterExpiryDate(currentTs, trade.strategy_expiration_ymd)) return false;
+          } else if (!isAtOrAfterStrategyExit(currentTs, trade.trade_start_ts, exitCriteria.exitDays, exitCriteria.exitTime)) {
+            return false;
+          }
+          return trade.legs.every((leg) => {
+            const streamerRows = rowByStreamerTs.get(leg.streamer_symbol);
+            const row = streamerRows ? streamerRows.get(ts) : null;
+            const value = row && row.value != null ? Number(row.value) : null;
+            if (!row || value == null || !Number.isFinite(value) || leg.entry_value == null || !Number.isFinite(leg.entry_value)) {
+              return false;
+            }
+            if (leg.entry_ts && currentTs < leg.entry_ts) return false;
+            return true;
+          });
+        });
       });
 
       const out = [];
       allTimestamps.forEach((ts) => {
         const perTradeRows = [];
-        enrichedTrades.forEach((trade) => {
+        completedTrades.forEach((trade) => {
           const currentTs = parseTimestamp(ts);
           if (trade.trade_start_ts && currentTs && currentTs < trade.trade_start_ts) return;
+          if (exitCriteria.holdTillExpiry) {
+            if (!isBeforeOrOnExpiryDate(currentTs, trade.strategy_expiration_ymd)) return;
+          }
           let strategyValue = 0;
           let strategyCost = 0;
           let complete = true;
@@ -2123,6 +2548,10 @@ LIMIT 100;</textarea>
               return;
             }
             if (leg.entry_ts && currentTs && currentTs < leg.entry_ts) {
+              complete = false;
+              return;
+            }
+            if (!exitCriteria.holdTillExpiry && !isWithinStrategyExitWindow(currentTs, trade.trade_start_ts, exitCriteria.exitDays, exitCriteria.exitTime)) {
               complete = false;
               return;
             }
@@ -2278,6 +2707,144 @@ LIMIT 100;</textarea>
       });
     }
 
+    function summarizeStrategyTrades(rows) {
+      const detailRows = (rows || []).filter((row) => !row.isStrategySummary);
+      const finalsByTrade = new Map();
+      detailRows.forEach((row) => {
+        const tradeKey = String(row.trade_index == null ? "" : row.trade_index);
+        const ts = String(row.snapshot_ts || "");
+        const tsDate = parseTimestamp(ts);
+        if (!tradeKey || !tsDate) return;
+        const prior = finalsByTrade.get(tradeKey);
+        if (!prior || tsDate > prior.tsDate) {
+          finalsByTrade.set(tradeKey, {
+            tradeKey,
+            ts,
+            tsDate,
+            strategy_pnl: row.strategy_pnl == null ? null : Number(row.strategy_pnl),
+            strategy_indexed: row.strategy_indexed == null ? null : Number(row.strategy_indexed),
+            strategy_cost: row.strategy_cost == null ? null : Number(row.strategy_cost),
+            strategy_price: row.strategy_price == null ? null : Number(row.strategy_price),
+          });
+        }
+      });
+
+      function strategyReturnPercent(row) {
+        const pnl = row && row.strategy_pnl != null ? Number(row.strategy_pnl) : NaN;
+        const costAbs = row && row.strategy_cost != null ? Math.abs(Number(row.strategy_cost)) : NaN;
+        if (!Number.isFinite(pnl) || !Number.isFinite(costAbs) || costAbs === 0) return null;
+        return (pnl / costAbs) * 100;
+      }
+
+      const finals = Array.from(finalsByTrade.values()).filter((row) => row.strategy_pnl != null && Number.isFinite(row.strategy_pnl));
+      const wins = finals.filter((row) => row.strategy_pnl > 0);
+      const losses = finals.filter((row) => row.strategy_pnl < 0);
+      const flats = finals.filter((row) => row.strategy_pnl === 0);
+      const totalPnl = finals.reduce((sum, row) => sum + row.strategy_pnl, 0);
+      const grossWin = wins.reduce((sum, row) => sum + row.strategy_pnl, 0);
+      const grossLossAbs = Math.abs(losses.reduce((sum, row) => sum + row.strategy_pnl, 0));
+      const avg = (items, selector) => items.length ? items.reduce((sum, item) => sum + selector(item), 0) / items.length : null;
+      const bestTrade = finals.length ? finals.reduce((best, row) => (best == null || row.strategy_pnl > best.strategy_pnl ? row : best), null) : null;
+      const worstTrade = finals.length ? finals.reduce((worst, row) => (worst == null || row.strategy_pnl < worst.strategy_pnl ? row : worst), null) : null;
+
+      return {
+        tradeCount: finals.length,
+        winCount: wins.length,
+        lossCount: losses.length,
+        flatCount: flats.length,
+        winRate: finals.length ? (wins.length / finals.length) * 100 : null,
+        avgWin: avg(wins, (row) => row.strategy_pnl),
+        avgLoss: avg(losses, (row) => row.strategy_pnl),
+        overallPnl: finals.length ? totalPnl : null,
+        avgTradePnl: finals.length ? totalPnl / finals.length : null,
+        avgGainLossPct: avg(
+          finals.filter((row) => strategyReturnPercent(row) != null),
+          (row) => strategyReturnPercent(row)
+        ),
+        bestTradePnl: bestTrade ? bestTrade.strategy_pnl : null,
+        worstTradePnl: worstTrade ? worstTrade.strategy_pnl : null,
+        profitFactor: grossLossAbs > 0 ? grossWin / grossLossAbs : (wins.length ? null : null),
+      };
+    }
+
+    function renderStrategyStats(rows) {
+      const grid = document.getElementById("strategyStatsGrid");
+      const meta = document.getElementById("strategyStatsMeta");
+      if (!grid || !meta) return;
+
+      grid.innerHTML = "";
+      const stats = summarizeStrategyTrades(rows);
+      if (!stats.tradeCount) {
+        meta.textContent = "Run analysis to compute trade-level summary stats.";
+        return;
+      }
+
+      const tradeLabel = stats.tradeCount === 1 ? "trade" : "trades";
+      meta.innerHTML = `Final outcome across completed trades.<span class="meta-emphasis">${escapeHtml(String(stats.tradeCount))} ${escapeHtml(tradeLabel)}</span>`;
+      const items = [
+        ["Win Rate", formatStatPercent(stats.winRate)],
+        ["Avg Win", formatStatAmount(stats.avgWin)],
+        ["Avg Loss", formatStatAmount(stats.avgLoss)],
+        ["Avg Trade", formatStatAmount(stats.avgTradePnl)],
+        ["Gain/Loss %", formatStatPercent(stats.avgGainLossPct)],
+        ["Best Trade", formatStatAmount(stats.bestTradePnl)],
+        ["Worst Trade", formatStatAmount(stats.worstTradePnl)],
+        ["Profit Factor", stats.profitFactor != null && Number.isFinite(stats.profitFactor) ? stats.profitFactor.toFixed(2) : "n/a"],
+      ];
+
+      items.forEach(([label, value]) => {
+        const tile = document.createElement("div");
+        tile.className = "stat-tile";
+        tile.innerHTML = `
+          <div class="stat-label">${escapeHtml(label)}</div>
+          <div class="stat-value">${escapeHtml(value || "n/a")}</div>
+        `;
+        grid.appendChild(tile);
+      });
+    }
+
+    function isWithinStrategyExitWindow(tsDate, tradeStartTs, exitDays, exitTime) {
+      if (!tsDate || !tradeStartTs) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const startDayUtc = dateUtcFromYmd(formatEtDateKey(tradeStartTs));
+      const currentMinutes = parseHmToMinutes(formatEtHm(tsDate));
+      const exitMinutes = parseHmToMinutes(exitTime);
+      if (currentDayUtc == null || startDayUtc == null || currentMinutes == null || exitMinutes == null) return false;
+      const dayDiff = Math.round((currentDayUtc - startDayUtc) / 86400000);
+      if (dayDiff < 0 || dayDiff > exitDays) return false;
+      if (dayDiff === exitDays && currentMinutes > exitMinutes) return false;
+      return true;
+    }
+
+    function isAtOrAfterStrategyExit(tsDate, tradeStartTs, exitDays, exitTime) {
+      if (!tsDate || !tradeStartTs) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const startDayUtc = dateUtcFromYmd(formatEtDateKey(tradeStartTs));
+      const currentMinutes = parseHmToMinutes(formatEtHm(tsDate));
+      const exitMinutes = parseHmToMinutes(exitTime);
+      if (currentDayUtc == null || startDayUtc == null || currentMinutes == null || exitMinutes == null) return false;
+      const dayDiff = Math.round((currentDayUtc - startDayUtc) / 86400000);
+      if (dayDiff > exitDays) return true;
+      if (dayDiff < exitDays) return false;
+      return currentMinutes >= exitMinutes;
+    }
+
+    function isBeforeOrOnExpiryDate(tsDate, expirationYmd) {
+      if (!tsDate || !expirationYmd) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const expUtc = dateUtcFromYmd(expirationYmd);
+      if (currentDayUtc == null || expUtc == null) return false;
+      return currentDayUtc <= expUtc;
+    }
+
+    function isAtOrAfterExpiryDate(tsDate, expirationYmd) {
+      if (!tsDate || !expirationYmd) return false;
+      const currentDayUtc = dateUtcFromYmd(formatEtDateKey(tsDate));
+      const expUtc = dateUtcFromYmd(expirationYmd);
+      if (currentDayUtc == null || expUtc == null) return false;
+      return currentDayUtc >= expUtc;
+    }
+
     function formatEtHm(dateObj) {
       if (!dateObj) return "";
       return new Intl.DateTimeFormat("en-US", {
@@ -2326,9 +2893,21 @@ LIMIT 100;</textarea>
       return `${sign}${signedDelta.toFixed(2)}%`;
     }
 
-    function getSelectedStrategyChartOverlay() {
-      const checked = document.querySelector('input[name="strategyChartOverlayToggle"]:checked');
-      return checked ? checked.value : "";
+    function formatStrategyTooltipTimestamp(value) {
+      const ts = parseTimestamp(value);
+      if (!ts) return "";
+      const etDate = formatEtDateKey(ts);
+      const hm = formatEtHm(ts);
+      return `${hm} ET on ${etDate}`;
+    }
+
+    function isVisibleStrategyChartTime(ts) {
+      if (!ts) return false;
+      const etMinutes = parseHmToMinutes(formatEtHm(ts));
+      if (etMinutes == null) return false;
+      const dayStart = 7 * 60 + 30;
+      const dayEnd = 18 * 60;
+      return etMinutes >= dayStart && etMinutes < dayEnd;
     }
 
     function stepPath(points, xScale, yScale) {
@@ -2358,7 +2937,6 @@ LIMIT 100;</textarea>
       svg.innerHTML = "";
       tooltip.classList.remove("visible");
       tooltip.innerHTML = "";
-      const overlayMode = getSelectedStrategyChartOverlay();
       const detailRows = (rows || []).filter((row) => !row.isStrategySummary);
       if (!detailRows.length) {
         meta.textContent = "No strategy data to chart.";
@@ -2380,41 +2958,12 @@ LIMIT 100;</textarea>
           tsDate,
           strategyPrice: Number(strategyPrice),
           strategyCost: strategyCost == null ? null : Number(strategyCost),
-          spotPrice: row.spot_price == null ? null : Number(row.spot_price),
-          vixPrice: row.vix_price == null ? null : Number(row.vix_price),
           expirationDate: String(row.expiration_date || ""),
         });
       });
 
       const stepMs = 15 * 60 * 1000;
       const tradeSeries = [];
-      function buildAlignedRawSteps(sorted, entryDate, valueKey) {
-        const points = sorted
-          .filter((p) => p[valueKey] != null && Number.isFinite(Number(p[valueKey])))
-          .map((p) => ({
-            elapsedMs: p.tsDate.getTime() - entryDate.getTime(),
-            value: Number(p[valueKey]),
-          }));
-        if (!points.length) return [];
-        const maxElapsed = points[points.length - 1].elapsedMs;
-        if (!Number.isFinite(maxElapsed) || maxElapsed < 0) return [];
-        const steps = [];
-        const maxStep = Math.floor(maxElapsed / stepMs);
-        for (let s = 0; s <= maxStep; s += 1) {
-          const ms = s * stepMs;
-          if (ms < points[0].elapsedMs || ms > maxElapsed) {
-            steps.push(null);
-            continue;
-          }
-          let value = points[0].value;
-          for (let i = 1; i < points.length; i += 1) {
-            if (ms < points[i].elapsedMs) break;
-            value = points[i].value;
-          }
-          steps.push(value == null ? null : Number(value));
-        }
-        return steps;
-      }
       Array.from(byTrade.entries())
         .sort((a, b) => Number(a[0]) - Number(b[0]))
         .forEach(([tradeKey, points]) => {
@@ -2438,7 +2987,8 @@ LIMIT 100;</textarea>
           if (!Number.isFinite(maxElapsed) || maxElapsed < 0) return;
 
           function carryForward(ms) {
-            if (ms < normalized[0].elapsedMs || ms > normalized[normalized.length - 1].elapsedMs) return null;
+            if (ms < normalized[0].elapsedMs) return null;
+            if (ms >= normalized[normalized.length - 1].elapsedMs) return normalized[normalized.length - 1].indexed;
             let value = normalized[0].indexed;
             for (let i = 1; i < normalized.length; i += 1) {
               if (ms < normalized[i].elapsedMs) break;
@@ -2448,7 +2998,7 @@ LIMIT 100;</textarea>
           }
 
           const steps = [];
-          const maxStep = Math.floor(maxElapsed / stepMs);
+          const maxStep = Math.ceil(maxElapsed / stepMs);
           for (let s = 0; s <= maxStep; s += 1) {
             const ms = s * stepMs;
             const val = carryForward(ms);
@@ -2461,8 +3011,6 @@ LIMIT 100;</textarea>
             entryCost: entry.strategyCost,
             expirationDate: entry.expirationDate,
             steps,
-            symbolSteps: buildAlignedRawSteps(sorted, entry.tsDate, "spotPrice"),
-            vixSteps: buildAlignedRawSteps(sorted, entry.tsDate, "vixPrice"),
           });
         });
 
@@ -2483,20 +3031,29 @@ LIMIT 100;</textarea>
         blended.push(vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
       }
 
-      const overlayValues = [];
-      for (let i = 0; i < maxSteps; i += 1) {
-        if (!overlayMode) {
-          overlayValues.push(null);
-          continue;
-        }
-        const vals = tradeSeries
-          .map((t) => (overlayMode === "vix" ? t.vixSteps[i] : t.symbolSteps[i]))
-          .filter((v) => v != null && Number.isFinite(v));
-        overlayValues.push(vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
-      }
-
       const firstTrade = tradeSeries[0];
       const sampleTimes = Array.from({ length: maxSteps }, (_, i) => new Date(firstTrade.entryDate.getTime() + i * stepMs));
+      const finalBlendedIndex = (() => {
+        for (let i = blended.length - 1; i >= 0; i -= 1) {
+          if (blended[i] != null && Number.isFinite(blended[i])) return i;
+        }
+        return -1;
+      })();
+      const visibleIndexSet = new Set(sampleTimes
+        .map((ts, idx) => (isVisibleStrategyChartTime(ts) ? idx : -1))
+        .filter((idx) => idx >= 0));
+      if (visibleIndexSet.size) visibleIndexSet.add(0);
+      if (finalBlendedIndex >= 0) visibleIndexSet.add(finalBlendedIndex);
+      const visibleIndices = Array.from(visibleIndexSet).sort((a, b) => a - b);
+      if (!visibleIndices.length) {
+        meta.textContent = "No intraday ET samples available for chart.";
+        return;
+      }
+
+      const compressedIndexByOriginal = new Map();
+      visibleIndices.forEach((idx, compressedIdx) => {
+        compressedIndexByOriginal.set(idx, compressedIdx);
+      });
       const allY = tradeSeries
         .flatMap((t) => t.steps)
         .concat(blended)
@@ -2506,57 +3063,22 @@ LIMIT 100;</textarea>
         return;
       }
 
-      const maxAbs = Math.max(...allY.map((v) => Math.abs(v - 100)));
-      const span = Math.max(1, maxAbs * 1.15);
-      const yMin = 100 - span;
-      const yMax = 100 + span;
+      const observedMax = Math.max(...allY);
+      const yMin = 0;
+      const yMax = Math.max(101, observedMax * 1.1);
 
       const width = 1200;
       const height = 320;
       const m = { top: 18, right: 56, bottom: 78, left: 56 };
       const innerW = width - m.left - m.right;
       const innerH = height - m.top - m.bottom;
-      const xMax = Math.max(1, maxSteps - 1);
-      const xScale = (x) => m.left + (x / xMax) * innerW;
+      const compressedXMax = Math.max(1, visibleIndices.length - 1);
+      const xScale = (originalIdx) => {
+        const compressedIdx = compressedIndexByOriginal.get(originalIdx);
+        if (compressedIdx == null) return null;
+        return m.left + (compressedIdx / compressedXMax) * innerW;
+      };
       const yScale = (y) => m.top + ((yMax - y) / (yMax - yMin)) * innerH;
-
-      const overlayFinite = overlayValues.filter((v) => v != null && Number.isFinite(v));
-      let overlayYScale = null;
-      if (overlayFinite.length) {
-        let overlayMin = Math.min(...overlayFinite);
-        let overlayMax = Math.max(...overlayFinite);
-        if (Math.abs(overlayMax - overlayMin) < 1e-9) {
-          const pad = Math.max(1, Math.abs(overlayMax) * 0.03);
-          overlayMin -= pad;
-          overlayMax += pad;
-        } else {
-          const pad = (overlayMax - overlayMin) * 0.08;
-          overlayMin -= pad;
-          overlayMax += pad;
-        }
-        overlayYScale = (y) => m.top + ((overlayMax - y) / (overlayMax - overlayMin)) * innerH;
-
-        [overlayMax, (overlayMin + overlayMax) / 2, overlayMin].forEach((value) => {
-          const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          txt.setAttribute("x", String(m.left + innerW + 8));
-          txt.setAttribute("y", String(overlayYScale(value) + 4));
-          txt.setAttribute("text-anchor", "start");
-          txt.setAttribute("font-size", "11");
-          txt.setAttribute("fill", overlayMode === "vix" ? "#9a3412" : "#2563eb");
-          txt.textContent = value.toFixed(2);
-          svg.appendChild(txt);
-        });
-
-        const rightAxis = document.createElementNS("http://www.w3.org/2000/svg", "line");
-        rightAxis.setAttribute("x1", String(m.left + innerW));
-        rightAxis.setAttribute("x2", String(m.left + innerW));
-        rightAxis.setAttribute("y1", String(m.top));
-        rightAxis.setAttribute("y2", String(m.top + innerH));
-        rightAxis.setAttribute("stroke", overlayMode === "vix" ? "#c2410c" : "#2563eb");
-        rightAxis.setAttribute("stroke-width", "1");
-        rightAxis.setAttribute("opacity", "0.45");
-        svg.appendChild(rightAxis);
-      }
 
       const tradeTypes = new Set(
         tradeSeries.map((t) => (t.entryCost == null ? "unknown" : (t.entryCost < 0 ? "credit" : "debit")))
@@ -2570,37 +3092,90 @@ LIMIT 100;</textarea>
       for (let g = 0; g <= gridLines; g += 1) {
         const yVal = yMin + (g / gridLines) * (yMax - yMin);
         const y = yScale(yVal);
-        const isBaseline = Math.abs(yVal - 100) < 1e-6;
         const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
         line.setAttribute("x1", String(m.left));
         line.setAttribute("x2", String(m.left + innerW));
         line.setAttribute("y1", String(y));
         line.setAttribute("y2", String(y));
-        line.setAttribute("stroke", isBaseline ? "#64748b" : "#e2e8f0");
-        line.setAttribute("stroke-width", isBaseline ? "1.5" : "1");
-        line.setAttribute("stroke-dasharray", isBaseline ? "4 3" : "0");
+        line.setAttribute("stroke", "#e2e8f0");
+        line.setAttribute("stroke-width", "1");
+        line.setAttribute("stroke-dasharray", "0");
         svg.appendChild(line);
 
-        if (g === 0 || g === Math.floor(gridLines / 2) || g === gridLines) {
+        if (g === 0 || g === gridLines) {
           const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
           txt.setAttribute("x", String(m.left - 8));
           txt.setAttribute("y", String(y + 4));
           txt.setAttribute("text-anchor", "end");
           txt.setAttribute("font-size", "11");
           txt.setAttribute("fill", "#64748b");
-          txt.textContent = `${yVal.toFixed(1)}`;
+          txt.textContent = formatStrategyIndexAxisLabel(yVal);
           svg.appendChild(txt);
         }
       }
 
-      for (let i = 1; i < blended.length; i += 1) {
-        const a = blended[i - 1];
-        const b = blended[i];
+      if (yMin <= 100 && yMax >= 100) {
+        const baselineY = yScale(100);
+        const baseline = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        baseline.setAttribute("x1", String(m.left));
+        baseline.setAttribute("x2", String(m.left + innerW));
+        baseline.setAttribute("y1", String(baselineY));
+        baseline.setAttribute("y2", String(baselineY));
+        baseline.setAttribute("stroke", "#64748b");
+        baseline.setAttribute("stroke-width", "1.5");
+        baseline.setAttribute("stroke-dasharray", "4 3");
+        svg.appendChild(baseline);
+
+        const baselineLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        baselineLabel.setAttribute("x", String(m.left - 8));
+        baselineLabel.setAttribute("y", String(baselineY + 4));
+        baselineLabel.setAttribute("text-anchor", "end");
+        baselineLabel.setAttribute("font-size", "11");
+        baselineLabel.setAttribute("fill", "#64748b");
+        baselineLabel.textContent = "100%";
+        svg.appendChild(baselineLabel);
+      }
+
+      const visibleDayBoundaries = [];
+      for (let i = 1; i < visibleIndices.length; i += 1) {
+        const prevIdx = visibleIndices[i - 1];
+        const currIdx = visibleIndices[i];
+        const prevKey = formatEtDateKey(sampleTimes[prevIdx]);
+        const currKey = formatEtDateKey(sampleTimes[currIdx]);
+        if (prevKey && currKey && prevKey !== currKey) {
+          visibleDayBoundaries.push(currIdx);
+        }
+      }
+      visibleDayBoundaries.forEach((idx) => {
+        const x = xScale(idx);
+        if (x == null) return;
+        const boundary = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        boundary.setAttribute("x1", String(x));
+        boundary.setAttribute("x2", String(x));
+        boundary.setAttribute("y1", String(m.top));
+        boundary.setAttribute("y2", String(m.top + innerH));
+        boundary.setAttribute("stroke", "#94a3b8");
+        boundary.setAttribute("stroke-width", "1");
+        boundary.setAttribute("stroke-dasharray", "5 5");
+        boundary.setAttribute("opacity", "0.8");
+        svg.appendChild(boundary);
+      });
+
+      const visibleBlendPts = visibleIndices
+        .map((i) => (blended[i] == null || !Number.isFinite(blended[i]) ? null : ({ x: i, y: blended[i] })))
+        .filter(Boolean);
+
+      for (let i = 1; i < visibleBlendPts.length; i += 1) {
+        const prevPoint = visibleBlendPts[i - 1];
+        const nextPoint = visibleBlendPts[i];
+        const a = prevPoint.y;
+        const b = nextPoint.y;
         if (a == null || b == null) continue;
         const isProfit = profitBelow100 ? a <= 100 : a >= 100;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        const x1 = xScale(i - 1);
-        const x2 = xScale(i);
+        const x1 = xScale(prevPoint.x);
+        const x2 = xScale(nextPoint.x);
+        if (x1 == null || x2 == null) continue;
         const y = yScale(a);
         const yBase = yScale(100);
         path.setAttribute("d", `M${x1},${yBase} L${x1},${y} L${x2},${y} L${x2},${yBase} Z`);
@@ -2610,7 +3185,7 @@ LIMIT 100;</textarea>
 
       tradeSeries.forEach((series) => {
         const pts = series.steps
-          .map((v, i) => (v == null ? null : ({ x: i, y: v })))
+          .map((v, i) => (v == null || !compressedIndexByOriginal.has(i) ? null : ({ x: i, y: v })))
           .filter(Boolean);
         if (pts.length < 2) return;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -2622,32 +3197,13 @@ LIMIT 100;</textarea>
         svg.appendChild(path);
       });
 
-      const blendPts = blended
-        .map((v, i) => (v == null ? null : ({ x: i, y: v })))
-        .filter(Boolean);
-      if (blendPts.length >= 2) {
+      if (visibleBlendPts.length >= 2) {
         const blendPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        blendPath.setAttribute("d", stepPath(blendPts, xScale, yScale));
+        blendPath.setAttribute("d", stepPath(visibleBlendPts, xScale, yScale));
         blendPath.setAttribute("fill", "none");
         blendPath.setAttribute("stroke", "#0f172a");
         blendPath.setAttribute("stroke-width", "2.4");
         svg.appendChild(blendPath);
-      }
-
-      if (overlayYScale) {
-        const overlayPts = overlayValues
-          .map((v, i) => (v == null ? null : ({ x: i, y: v })))
-          .filter(Boolean);
-        if (overlayPts.length >= 2) {
-          const overlayPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-          overlayPath.setAttribute("d", stepPath(overlayPts, xScale, overlayYScale));
-          overlayPath.setAttribute("fill", "none");
-          overlayPath.setAttribute("stroke", overlayMode === "vix" ? "#c2410c" : "#2563eb");
-          overlayPath.setAttribute("stroke-width", "1.8");
-          overlayPath.setAttribute("stroke-dasharray", "6 4");
-          overlayPath.setAttribute("opacity", "0.7");
-          svg.appendChild(overlayPath);
-        }
       }
 
       const hoverGuide = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -2672,15 +3228,16 @@ LIMIT 100;</textarea>
       function hideTooltip() {
         tooltip.classList.remove("visible");
         tooltip.innerHTML = "";
+        tooltip.style.transform = "translate(12px, -12px)";
         hoverGuide.setAttribute("opacity", "0");
         hoverMarker.setAttribute("opacity", "0");
       }
 
       function findNearestBlendedIndex(target) {
-        if (!blended.length) return -1;
+        if (!visibleIndices.length) return -1;
         let bestIdx = -1;
         let bestDist = Infinity;
-        for (let i = 0; i < blended.length; i += 1) {
+        for (const i of visibleIndices) {
           const value = blended[i];
           if (value == null || !Number.isFinite(value)) continue;
           const dist = Math.abs(i - target);
@@ -2707,8 +3264,10 @@ LIMIT 100;</textarea>
           return;
         }
 
-        const target = Math.round(((relX - m.left) / innerW) * xMax);
-        const idx = findNearestBlendedIndex(Math.max(0, Math.min(xMax, target)));
+        const targetCompressed = Math.round(((relX - m.left) / innerW) * compressedXMax);
+        const clampedCompressed = Math.max(0, Math.min(compressedXMax, targetCompressed));
+        const targetOriginal = visibleIndices[clampedCompressed];
+        const idx = findNearestBlendedIndex(targetOriginal);
         if (idx < 0) {
           hideTooltip();
           return;
@@ -2725,19 +3284,33 @@ LIMIT 100;</textarea>
         hoverMarker.setAttribute("cy", String(chartY));
         hoverMarker.setAttribute("opacity", "1");
 
-        tooltip.innerHTML = `<div class="chart-tooltip-label">${escapeHtml(formatLocalDateTime(ts))}</div><div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>`;
+        tooltip.innerHTML = `
+          <div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>
+          <div class="chart-tooltip-debug">${escapeHtml(formatStrategyTooltipTimestamp(ts))}</div>
+        `;
         tooltip.classList.add("visible");
 
-        const left = Math.min(wrapRect.width - 12, Math.max(12, event.clientX - wrapRect.left));
-        const top = Math.min(wrapRect.height - 12, Math.max(12, event.clientY - wrapRect.top));
+        const tooltipWidth = tooltip.offsetWidth || 0;
+        const tooltipHeight = tooltip.offsetHeight || 0;
+        const cursorLeft = event.clientX - wrapRect.left;
+        const cursorTop = event.clientY - wrapRect.top;
+        const spaceRight = wrapRect.width - cursorLeft;
+        const placeLeft = spaceRight < tooltipWidth + 28;
+        const left = Math.min(wrapRect.width - 12, Math.max(12, cursorLeft));
+        const top = Math.min(wrapRect.height - 12, Math.max(tooltipHeight + 12, cursorTop));
         tooltip.style.left = `${left}px`;
         tooltip.style.top = `${top}px`;
+        tooltip.style.transform = placeLeft
+          ? "translate(calc(-100% - 12px), -12px)"
+          : "translate(12px, -12px)";
       });
 
       const tickTarget = 8;
-      const tickEvery = Math.max(1, Math.ceil(maxSteps / tickTarget));
-      for (let i = 0; i < maxSteps; i += tickEvery) {
+      const tickEvery = Math.max(1, Math.ceil(visibleIndices.length / tickTarget));
+      for (let visiblePos = 0; visiblePos < visibleIndices.length; visiblePos += tickEvery) {
+        const i = visibleIndices[visiblePos];
         const x = xScale(i);
+        if (x == null) continue;
         const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
         tick.setAttribute("x1", String(x));
         tick.setAttribute("x2", String(x));
@@ -2771,6 +3344,7 @@ LIMIT 100;</textarea>
       svg.appendChild(xAxis);
 
       let metaMsg = `Blended ${tradeSeries.length} aligned trade series on a 15-minute ET grid.`;
+      metaMsg += " Overnight ET hours from 6:00 PM to 7:30 AM are visually compressed; dashed lines mark each new day.";
       if (mixedTradeTypes) {
         metaMsg += " Mixed debit/credit entries detected; shading uses reference trade semantics.";
       }
@@ -2783,8 +3357,8 @@ LIMIT 100;</textarea>
       if (!resolvedLegs.length) {
         meta.textContent = "Please resolve at least one leg.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -2792,22 +3366,60 @@ LIMIT 100;</textarea>
       const symbol = document.getElementById("strategySymbol").value || "SPX";
       const snapshotFromDate = document.getElementById("strategySnapshotFromDate").value || "";
       const snapshotToDate = document.getElementById("strategySnapshotToDate").value || "";
+      const holdTillExpiry = Boolean(document.getElementById("strategyHoldToExpiry")?.checked);
+      const exitDays = parseInt(document.getElementById("strategyExitDays").value || "0", 10);
+      const exitTime = document.getElementById("strategyExitTime").value || "";
       const allDates = Array.isArray(strategyState.snapshotDates) ? strategyState.snapshotDates : [];
       if (!allDates.length) {
         meta.textContent = "No snapshot dates available for this symbol.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       const fromDate = snapshotFromDate || allDates[0];
       const toDate = snapshotToDate || allDates[allDates.length - 1];
+      const entryTimes = resolvedLegs.map((leg) => parseHmToMinutes(leg.entry_time)).filter((value) => value != null);
+      const latestEntryTime = entryTimes.length ? Math.max(...entryTimes) : null;
       if (fromDate > toDate) {
         meta.textContent = "Snapshot From must not be after Snapshot To.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      if (!holdTillExpiry && (!Number.isFinite(exitDays) || exitDays < 0)) {
+        meta.textContent = "Exit days must be a non-negative integer.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      if (!holdTillExpiry && !exitTime) {
+        meta.textContent = "Exit Time is required.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      const exitMinutes = holdTillExpiry ? null : parseHmToMinutes(exitTime);
+      if (!holdTillExpiry && exitMinutes == null) {
+        meta.textContent = "Exit time must be a valid ET time.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      if (!holdTillExpiry && exitDays === 0 && latestEntryTime != null && exitMinutes <= latestEntryTime) {
+        meta.textContent = "When exit days is 0, exit time must be later than the strategy entry time.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -2815,8 +3427,8 @@ LIMIT 100;</textarea>
       if (!tradeDates.length) {
         meta.textContent = "No snapshot dates in the selected range.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -2836,11 +3448,12 @@ LIMIT 100;</textarea>
               target_side: String(leg.side || "BUY"),
               window_minutes: "5",
               strict_dte: "1",
+              best_only: "1",
             });
             const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
             const payload = await res.json();
             if (!res.ok) return null;
-            const contracts = Array.isArray(payload.contracts) ? payload.contracts : [];
+            const contracts = Array.isArray(payload.contracts) ? payload.contracts : (payload.streamer_symbol ? [payload] : []);
             if (!contracts.length) return null;
             const best = contracts[0];
             return {
@@ -2872,8 +3485,8 @@ LIMIT 100;</textarea>
       if (!tradePlans.length) {
         meta.textContent = "No daily trades could be opened at the requested entry time/delta in this range.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -2882,16 +3495,16 @@ LIMIT 100;</textarea>
       if (!streamers.length) {
         meta.textContent = "No contracts resolved for the current legs.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       if (streamers.length > MAX_STRATEGY_ANALYSIS_STREAMERS) {
         meta.textContent = `Resolved contracts exceed ${MAX_STRATEGY_ANALYSIS_STREAMERS} streamers for series analysis. Reduce selected range or legs.`;
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -2917,8 +3530,8 @@ LIMIT 100;</textarea>
       if (!seriesRes.ok) {
         meta.textContent = "Error loading series: " + (seriesData.error || "unknown");
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -2931,14 +3544,28 @@ LIMIT 100;</textarea>
       if (!rows.length) {
         meta.textContent = "No data for the selected legs.";
         meta.className = "meta danger";
+        renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
-      const transformed = transformStrategySeriesRows(rows, summaryData.market_series || [], tradePlans);
+      const transformed = transformStrategySeriesRows(rows, summaryData.market_series || [], tradePlans, { holdTillExpiry, exitDays, exitTime });
+      if (!transformed.length) {
+        meta.textContent = "No completed trades yet for the selected exit criteria.";
+        meta.className = "meta danger";
+        renderStrategyStats([]);
+        renderStrategySeriesTable([]);
+        renderStrategyIndexChart([]);
+        return;
+      }
+      const completedTradeCount = new Set(transformed.map((row) => row.trade_index).filter((value) => value != null)).size;
+      const completedContracts = new Set(
+        transformed
+          .map((row) => row.streamer_symbol)
+          .filter((value) => value != null && value !== "")
+      ).size;
+      renderStrategyStats(transformed);
       renderStrategySeriesTable(transformed);
-      renderStrategyTradeMatrixTable(transformed);
       renderStrategyIndexChart(transformed);
       meta.textContent = "";
       meta.className = "meta";
@@ -2954,20 +3581,8 @@ LIMIT 100;</textarea>
         .addEventListener("change", loadStrategySnapshotDateOptions);
       document.getElementById("strategyResolveBtn").addEventListener("click", resolveStrategyLeg);
       document.getElementById("strategyRunBtn").addEventListener("click", runStrategyAnalysis);
-      document.querySelectorAll('input[name="strategyChartOverlayToggle"]').forEach((inputEl) => {
-        inputEl.addEventListener("change", (event) => {
-          const current = event.currentTarget;
-          if (current.checked) {
-            document.querySelectorAll('input[name="strategyChartOverlayToggle"]').forEach((other) => {
-              if (other !== current) other.checked = false;
-            });
-            strategyState.chartOverlay = current.value || "";
-          } else {
-            strategyState.chartOverlay = "";
-          }
-          renderStrategyIndexChart(strategyState.historyRows || []);
-        });
-      });
+      document.getElementById("strategyHoldToExpiry").addEventListener("change", refreshStrategyExitCriteriaState);
+      refreshStrategyExitCriteriaState();
       renderStrategyLegsTable();
     }
 
@@ -2980,10 +3595,16 @@ LIMIT 100;</textarea>
       if (!fromEl || !toEl || !fromList || !toList) return;
 
       try {
-        const res = await fetch(`/api/options/snapshot-dates?symbol=${encodeURIComponent(symbol)}`);
-        const payload = await res.json();
-        if (!res.ok) {
+        const [datesRes, typesRes] = await Promise.all([
+          fetch(`/api/options/snapshot-dates?symbol=${encodeURIComponent(symbol)}`),
+          fetch(`/api/options/option-types?symbol=${encodeURIComponent(symbol)}`),
+        ]);
+        const payload = await datesRes.json();
+        const typesPayload = await typesRes.json();
+        if (!datesRes.ok || !typesRes.ok) {
           strategyState.snapshotDates = [];
+          strategyState.optionTypes = [];
+          populateStrategyOptionTypeOptions([]);
           fromList.innerHTML = "";
           toList.innerHTML = "";
           fromEl.value = "";
@@ -2992,7 +3613,9 @@ LIMIT 100;</textarea>
         }
 
         const dates = Array.isArray(payload.dates) ? payload.dates : [];
+        const optionTypes = Array.isArray(typesPayload.option_types) ? typesPayload.option_types : [];
         strategyState.snapshotDates = dates;
+        populateStrategyOptionTypeOptions(optionTypes);
 
         const html = dates.map((d) => `<option value="${escapeHtml(String(d))}"></option>`).join("");
         fromList.innerHTML = html;
@@ -3022,6 +3645,8 @@ LIMIT 100;</textarea>
         }
       } catch {
         strategyState.snapshotDates = [];
+        strategyState.optionTypes = [];
+        populateStrategyOptionTypeOptions([]);
         fromList.innerHTML = "";
         toList.innerHTML = "";
         fromEl.value = "";

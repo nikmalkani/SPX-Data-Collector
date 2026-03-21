@@ -224,6 +224,21 @@ def _run_snapshot_dates_payload(conn: sqlite3.Connection, *, symbol: str) -> dic
     return {"dates": [str(row[0]) for row in rows if row[0]]}
 
 
+def _run_option_types_payload(conn: sqlite3.Connection, *, symbol: str) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT option_type
+        FROM spx_option_snapshots
+        WHERE symbol = ?
+          AND option_type IS NOT NULL
+          AND TRIM(option_type) <> ''
+        ORDER BY option_type ASC
+        """,
+        [symbol],
+    ).fetchall()
+    return {"option_types": [str(row[0]).upper() for row in rows if row[0]]}
+
+
 def _run_resolve_leg_payload(
     conn: sqlite3.Connection,
     *,
@@ -238,6 +253,7 @@ def _run_resolve_leg_payload(
     snapshot_to: datetime | None = None,
     window_minutes: int = 5,
     strict_dte: bool = False,
+    best_only: bool = False,
 ) -> dict[str, Any]:
     opt_type = option_type.upper()
     if opt_type not in {"PUT", "CALL"}:
@@ -295,11 +311,12 @@ def _run_resolve_leg_payload(
             CASE WHEN CAST(strftime('%s', snapshot_ts) AS INTEGER) <= ? THEN 0 ELSE 1 END AS is_after
         FROM spx_option_snapshots
         WHERE symbol = ?
-          AND UPPER(option_type) = ?
+          AND option_type = ?
           AND dte BETWEEN ? AND ?
           AND delta IS NOT NULL
           AND snapshot_ts BETWEEN ? AND ?
         ORDER BY time_diff ASC, is_after ASC, delta_diff ASC, dte_diff ASC, strike_price ASC
+        {"LIMIT 1" if best_only else ""}
         """,
             [
             normalized_delta,
@@ -314,6 +331,9 @@ def _run_resolve_leg_payload(
             window_to,
             ],
         ).fetchall()
+
+        if best_only:
+            return rows
 
         by_streamer: dict[str, Any] = {}
         for row in rows:
@@ -375,6 +395,11 @@ def _run_resolve_leg_payload(
 
     # Keep top-level contract keys for backward compatibility while adding full match set.
     best = contracts[0]
+    if best_only:
+        return {
+            **best,
+            "count": len(contracts),
+        }
     return {
         **best,
         "count": len(contracts),
@@ -403,7 +428,7 @@ def _run_contracts_payload(
         clauses.append("snapshot_ts <= ?")
         params.append(_sqlite_timestamp(end_dt))
     if option_type:
-        clauses.append("UPPER(option_type) = ?")
+        clauses.append("option_type = ?")
         params.append(option_type.upper())
     if min_strike is not None:
         clauses.append("strike_price >= ?")
@@ -826,7 +851,12 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             _html_response(self, _HTML)
             return
         if path == "/api/health":
-            _json_response(self, {"ok": True})
+            _json_response(self, {"ok": True, "db_path": str(self.db_path)})
+            return
+        if path == "/api/schema":
+            with sqlite3.connect(self.db_path) as conn:
+                payload = _schema_payload(conn)
+            _json_response(self, payload)
             return
         if path == "/api/options/contracts":
             try:
@@ -903,6 +933,18 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 _error_response(self, str(exc))
             return
+        if path == "/api/options/option-types":
+            try:
+                symbol = _get_qs(qs, "symbol", "SPX")
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    payload = _run_option_types_payload(
+                        conn, symbol=symbol or "SPX"
+                    )
+                _json_response(self, payload)
+            except Exception as exc:
+                _error_response(self, str(exc))
+            return
         if path == "/api/options/resolve-leg":
             try:
                 symbol = _get_qs(qs, "symbol", "SPX")
@@ -919,6 +961,8 @@ class SqlUiHandler(BaseHTTPRequestHandler):
                 window_minutes = _parse_int(_get_qs(qs, "window_minutes"), "window_minutes", 5)
                 strict_dte_raw = (_get_qs(qs, "strict_dte") or "").strip().lower()
                 strict_dte = strict_dte_raw in {"1", "true", "yes", "on"}
+                best_only_raw = (_get_qs(qs, "best_only") or "").strip().lower()
+                best_only = best_only_raw in {"1", "true", "yes", "on"}
                 with sqlite3.connect(self.db_path) as conn:
                     conn.row_factory = sqlite3.Row
                     payload = _run_resolve_leg_payload(
@@ -934,6 +978,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
                         snapshot_to=snapshot_to,
                         window_minutes=window_minutes,
                         strict_dte=strict_dte,
+                        best_only=best_only,
                     )
                 _json_response(self, payload)
             except Exception as exc:
@@ -943,7 +988,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
         _json_response(self, {"error": "not_found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/options/strategy-history":
+        if self.path not in {"/api/query", "/api/options/strategy-history"}:
             _json_response(self, {"error": "not_found"}, status=404)
             return
 
@@ -951,6 +996,13 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             raw_len = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(raw_len).decode("utf-8")
             parsed = json.loads(body)
+
+            if self.path == "/api/query":
+                query = str(parsed.get("query", ""))
+                with sqlite3.connect(self.db_path) as conn:
+                    payload = _run_query(conn, query)
+                _json_response(self, payload)
+                return
 
             payload_legs_raw = parsed.get("legs")
             if not isinstance(payload_legs_raw, list):
@@ -1200,6 +1252,9 @@ _HTML = """<!doctype html>
       box-shadow: 0 10px 24px rgba(234, 88, 12, 0.2);
     }
     button:hover, select:hover { transform: translateY(-1px); }
+    select.input {
+      box-shadow: 0 4px 12px rgba(234, 88, 12, 0.08);
+    }
     button:focus-visible, select:focus-visible, .input:focus-visible, textarea:focus-visible {
       outline: 2px solid rgba(251, 146, 60, 0.45);
       outline-offset: 2px;
@@ -1267,8 +1322,8 @@ _HTML = """<!doctype html>
     }
     .chart-tooltip {
       position: absolute;
-      min-width: 126px;
-      max-width: 187px;
+      min-width: 180px;
+      max-width: 240px;
       padding: 8px 10px;
       border-radius: 10px;
       background: rgba(15, 23, 42, 0.94);
@@ -1281,7 +1336,7 @@ _HTML = """<!doctype html>
       transform: translate(12px, -12px);
       transition: opacity 120ms ease;
       z-index: 2;
-      white-space: nowrap;
+      white-space: normal;
     }
     .chart-tooltip.visible {
       opacity: 1;
@@ -1289,6 +1344,11 @@ _HTML = """<!doctype html>
     .chart-tooltip-label {
       color: #cbd5e1;
       margin-bottom: 2px;
+    }
+    .chart-tooltip-debug {
+      color: #e2e8f0;
+      font-size: 0.72rem;
+      margin-top: 4px;
     }
     .chart-tooltip-value {
       font-weight: 700;
@@ -1502,25 +1562,30 @@ _HTML = """<!doctype html>
       color: #fff;
       font-weight: 700;
       cursor: pointer;
-      opacity: 0.55;
+      opacity: 1;
     }
     .side-btn.active { opacity: 1; }
-    .buy-btn { background: var(--success); }
-    .sell-btn { background: var(--danger); }
+    .buy-btn { background: #94bba0; }
+    .sell-btn { background: #e0a3a3; }
+    .buy-btn.active { background: var(--success); }
+    .sell-btn.active { background: var(--danger); }
     .qty-input {
       width: 100px;
     }
+    .strategy-leg-mobile-label {
+      display: none;
+    }
     .tab-nav {
-      display: flex;
-      gap: 10px;
-      margin: 0;
-      flex-wrap: wrap;
-      padding: 8px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: rgba(255,255,255,0.62);
-      backdrop-filter: blur(10px);
-      width: fit-content;
+      display: block;
+      margin: 0 0 8px;
+    }
+    .tab-heading {
+      display: inline-block;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+      padding: 6px 2px 2px;
     }
     .tab-button {
       border: 1px solid var(--line);
@@ -1544,6 +1609,9 @@ _HTML = """<!doctype html>
     .tab-panel.active {
       display: block;
       animation: fade-in 180ms ease;
+    }
+    .is-hidden {
+      display: none !important;
     }
     @keyframes fade-in {
       from { opacity: 0; transform: translateY(3px); }
@@ -1581,7 +1649,7 @@ _HTML = """<!doctype html>
       .controls-card { grid-template-columns: 1fr; }
       .controls-card .full { grid-column: auto; }
       .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .tab-nav { gap: 8px; width: 100%; }
+      .tab-nav { width: 100%; }
       .tab-button { width: 100%; min-width: 0; }
       .hero { padding: 14px 18px; }
     }
@@ -1600,7 +1668,109 @@ _HTML = """<!doctype html>
         white-space: normal;
         max-width: 10ch;
       }
-      .stats-grid { grid-template-columns: 1fr; }
+      .stats-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .chart-wrap {
+        overflow: hidden;
+        padding: 10px;
+      }
+      .chart-svg {
+        height: 420px;
+      }
+      .chart-legend {
+        gap: 8px;
+      }
+      .chart-legend-item {
+        padding: 7px 9px;
+        font-size: 0.76rem;
+      }
+      .stat-tile {
+        padding: 12px;
+        border-radius: 16px;
+      }
+      .stat-label {
+        font-size: 0.66rem;
+        letter-spacing: 0.1em;
+      }
+      .stat-value {
+        margin-top: 8px;
+        font-size: 1rem;
+        line-height: 1.15;
+        overflow-wrap: anywhere;
+      }
+      .meta-emphasis {
+        margin-left: 0;
+        margin-top: 6px;
+      }
+      #strategyLegsWrap {
+        overflow-x: hidden;
+      }
+      #strategyLegsTable thead {
+        display: none;
+      }
+      #strategyLegsTable,
+      #strategyLegsTable tbody {
+        display: block;
+        width: 100%;
+      }
+      #strategyLegsTable tr {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-areas:
+          "remove name"
+          "side side"
+          "qty qty";
+        gap: 10px 12px;
+        padding: 14px 12px;
+      }
+      #strategyLegsTable td {
+        display: block;
+        white-space: normal;
+        border-bottom: 0;
+        padding: 0;
+      }
+      #strategyLegsTable tr + tr {
+        border-top: 1px solid var(--line);
+      }
+      .strategy-leg-remove {
+        grid-area: remove;
+        display: flex;
+        align-items: flex-start;
+      }
+      .strategy-leg-name {
+        grid-area: name;
+        font-weight: 500;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+      .strategy-leg-side {
+        grid-area: side;
+      }
+      .strategy-leg-qty {
+        grid-area: qty;
+      }
+      .strategy-leg-mobile-label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .strategy-leg-side .side-group {
+        display: flex;
+        width: 100%;
+      }
+      .strategy-leg-side .side-btn {
+        flex: 1 1 0;
+        min-width: 0;
+      }
+      .strategy-leg-qty .qty-input {
+        width: 100%;
+      }
     }
   </style>
 </head>
@@ -1623,7 +1793,7 @@ _HTML = """<!doctype html>
     </section>
     <div class="surface">
       <div class="tab-nav">
-      <button type="button" class="tab-button active" data-tab="strategy">Strategy Replay</button>
+      <div class="tab-heading">Strategy Replay</div>
     </div>
 
     <section id="tab-strategy" class="tab-panel active" data-tab="strategy">
@@ -1681,7 +1851,7 @@ _HTML = """<!doctype html>
             </div>
           </div>
           <div id="strategyBuilderMeta" class="meta" style="margin-top:4px;">Resolve a leg to add it to the strategy.</div>
-          <div class="result-wrap" style="margin-top:12px;">
+          <div id="strategyLegsWrap" class="result-wrap" style="margin-top:12px;">
             <table id="strategyLegsTable">
               <thead>
                 <tr>
@@ -1712,12 +1882,12 @@ _HTML = """<!doctype html>
       </div>
 
       <div class="grid full">
-        <div class="card">
+        <div id="strategyStatsCard" class="card is-hidden">
           <h2 style="margin-bottom: 6px;">Strategy Stats</h2>
           <div id="strategyStatsMeta" class="meta">Run analysis to compute trade-level summary stats.</div>
           <div id="strategyStatsGrid" class="stats-grid"></div>
         </div>
-        <div class="card">
+        <div id="strategyTimeSeriesCard" class="card is-hidden">
           <h2 style="margin-bottom: 6px;">Strategy Time Series</h2>
           <div id="strategySeriesMeta" class="meta">Resolved legs only.</div>
           <div class="result-wrap" style="margin-top:12px;">
@@ -1731,23 +1901,9 @@ _HTML = """<!doctype html>
             </table>
           </div>
         </div>
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Strategy Trade Matrix</h2>
-          <div class="meta">One row per trade, aligned at entry (T+0=100). Columns show indexed strategy progression by snapshot step.</div>
-          <div class="result-wrap" style="margin-top:12px;">
-            <table id="strategyTradeMatrixTable">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="card">
+        <div id="strategyIndexChartCard" class="card is-hidden">
           <div class="chart-card-header">
             <h2 style="margin-bottom: 6px;">Strategy Index Chart</h2>
-            <div class="chart-toggle-group" aria-label="Strategy chart overlay toggles">
-              <label class="chart-toggle-option"><input type="checkbox" name="strategyChartOverlayToggle" value="symbol" /> Symbol</label>
-              <label class="chart-toggle-option"><input type="checkbox" name="strategyChartOverlayToggle" value="vix" /> VIX Price</label>
-            </div>
           </div>
           <div id="strategyIndexChartMeta" class="meta">Aligned at entry (T+0). 15-minute ET interpolation with blended average.</div>
           <div class="chart-wrap">
@@ -1755,7 +1911,6 @@ _HTML = """<!doctype html>
             <div id="strategyIndexChartTooltip" class="chart-tooltip" aria-hidden="true"></div>
           </div>
           <div class="chart-legend">
-            <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#cbd5e1;"></span>Trade lines</span>
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#0f172a;"></span>Blended avg</span>
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#94a3b8;"></span>Strategy cost</span>
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:rgba(22,163,74,0.24);"></span>Profit zone</span>
@@ -1779,10 +1934,10 @@ _HTML = """<!doctype html>
       legs: [],
       nextLegId: 1,
       snapshotDates: [],
+      optionTypes: [],
       tableRows: [],
       historyRows: [],
       lastMeta: "",
-      chartOverlay: "",
     };
 
     const tabInitState = {
@@ -1992,6 +2147,21 @@ _HTML = """<!doctype html>
       return `${type} Δ${delta} DTE ${dte} @ ${entry}`;
     }
 
+    function populateStrategyOptionTypeOptions(optionTypes) {
+      const selectEl = document.getElementById("strategyOptionType");
+      if (!selectEl) return;
+      const values = (Array.isArray(optionTypes) ? optionTypes : [])
+        .map((value) => String(value || "").trim().toUpperCase())
+        .filter((value, index, arr) => value && arr.indexOf(value) === index);
+      const selected = String(selectEl.value || "").trim().toUpperCase();
+      const normalized = values.length ? values : ["PUT"];
+      selectEl.innerHTML = normalized
+        .map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`)
+        .join("");
+      selectEl.value = normalized.includes(selected) ? selected : normalized[0];
+      strategyState.optionTypes = normalized;
+    }
+
     function hasMatchingStrategyLeg(candidate) {
       return strategyState.legs.some((leg) => (
         String(leg.side || "BUY") === String(candidate.side || "BUY")
@@ -2038,15 +2208,19 @@ _HTML = """<!doctype html>
         const sellActive = leg.side === "SELL" ? "active" : "";
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><button type="button" class="remove-leg" data-leg-id="${String(leg.id)}">x</button></td>
-          <td>${escapeHtml(strategyLegLabel(leg))}</td>
-          <td>
+          <td class="strategy-leg-remove"><button type="button" class="remove-leg" data-leg-id="${String(leg.id)}">x</button></td>
+          <td class="strategy-leg-name">${escapeHtml(strategyLegLabel(leg))}</td>
+          <td class="strategy-leg-side">
+            <div class="strategy-leg-mobile-label">Side</div>
             <div class="side-group">
               <button type="button" class="side-btn buy-btn ${buyActive}" data-side-leg-id="${String(leg.id)}" data-side="BUY">BUY</button>
               <button type="button" class="side-btn sell-btn ${sellActive}" data-side-leg-id="${String(leg.id)}" data-side="SELL">SELL</button>
             </div>
           </td>
-          <td><input class="input qty-input" type="number" min="1" step="1" value="${Number(leg.quantity) || 1}" data-qty-leg-id="${String(leg.id)}" /></td>
+          <td class="strategy-leg-qty">
+            <div class="strategy-leg-mobile-label">Quantity</div>
+            <input class="input qty-input" type="number" min="1" step="1" value="${Number(leg.quantity) || 1}" data-qty-leg-id="${String(leg.id)}" />
+          </td>
         `;
         body.appendChild(tr);
       });
@@ -2159,6 +2333,7 @@ _HTML = """<!doctype html>
       });
       params.set("snapshot_from", `${effectiveFromDate}T00:00:00`);
       params.set("snapshot_to", `${effectiveToDate}T23:59:59`);
+      params.set("best_only", "1");
 
       const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
       const payload = await res.json();
@@ -2170,7 +2345,6 @@ _HTML = """<!doctype html>
       }
 
       const keptContracts = resolvedContracts.slice(0, MAX_STRATEGY_RESOLVED_CONTRACTS);
-      const skippedCap = Math.max(0, resolvedContracts.length - keptContracts.length);
       if (!keptContracts.length) {
         meta.textContent = "";
         meta.className = "meta";
@@ -2188,7 +2362,7 @@ _HTML = """<!doctype html>
         snapshot_from_date: effectiveFromDate,
         snapshot_to_date: effectiveToDate,
         isResolved: true,
-        matched_count: keptContracts.length,
+        matched_count: Number(payload.count) > 0 ? Number(payload.count) : keptContracts.length,
         entry_snapshot_ts: keptContracts[0] ? keptContracts[0].snapshot_ts : null,
         resolved_contracts: keptContracts,
       });
@@ -2358,6 +2532,7 @@ _HTML = """<!doctype html>
 
     function renderStrategySeriesTable(rows) {
       const body = document.querySelector("#strategySeriesTable tbody");
+      if (!body) return;
       body.innerHTML = "";
       rows.forEach((row) => {
         const spread = row.isStrategySummary
@@ -2488,6 +2663,13 @@ _HTML = """<!doctype html>
         }
       });
 
+      function strategyReturnPercent(row) {
+        const pnl = row && row.strategy_pnl != null ? Number(row.strategy_pnl) : NaN;
+        const costAbs = row && row.strategy_cost != null ? Math.abs(Number(row.strategy_cost)) : NaN;
+        if (!Number.isFinite(pnl) || !Number.isFinite(costAbs) || costAbs === 0) return null;
+        return (pnl / costAbs) * 100;
+      }
+
       const finals = Array.from(finalsByTrade.values()).filter((row) => row.strategy_pnl != null && Number.isFinite(row.strategy_pnl));
       const wins = finals.filter((row) => row.strategy_pnl > 0);
       const losses = finals.filter((row) => row.strategy_pnl < 0);
@@ -2510,8 +2692,8 @@ _HTML = """<!doctype html>
         overallPnl: finals.length ? totalPnl : null,
         avgTradePnl: finals.length ? totalPnl / finals.length : null,
         avgGainLossPct: avg(
-          finals.filter((row) => row.strategy_indexed != null && Number.isFinite(row.strategy_indexed)),
-          (row) => 100 - Number(row.strategy_indexed)
+          finals.filter((row) => strategyReturnPercent(row) != null),
+          (row) => strategyReturnPercent(row)
         ),
         bestTradePnl: bestTrade ? bestTrade.strategy_pnl : null,
         worstTradePnl: worstTrade ? worstTrade.strategy_pnl : null,
@@ -2553,6 +2735,19 @@ _HTML = """<!doctype html>
         `;
         grid.appendChild(tile);
       });
+    }
+
+    function setStrategyResultsVisibility(showResults) {
+      const statsCard = document.getElementById("strategyStatsCard");
+      const chartCard = document.getElementById("strategyIndexChartCard");
+      const seriesCard = document.getElementById("strategyTimeSeriesCard");
+      [statsCard, chartCard, seriesCard].forEach((el) => {
+        if (!el) return;
+        el.classList.toggle("is-hidden", !showResults);
+      });
+      if (seriesCard) {
+        seriesCard.classList.add("is-hidden");
+      }
     }
 
     function isWithinStrategyExitWindow(tsDate, tradeStartTs, exitDays, exitTime) {
@@ -2649,11 +2844,12 @@ _HTML = """<!doctype html>
       return `${sign}${signedDelta.toFixed(2)}%`;
     }
 
-    function formatStrategyOverlayValue(value, overlayMode) {
-      if (value == null || !Number.isFinite(Number(value))) return "";
-      const numeric = Number(value);
-      if (overlayMode === "vix") return (numeric * 100).toFixed(2);
-      return numeric.toFixed(2);
+    function formatStrategyTooltipTimestamp(value) {
+      const ts = parseTimestamp(value);
+      if (!ts) return "";
+      const etDate = formatEtDateKey(ts);
+      const hm = formatEtHm(ts);
+      return `${hm} ET on ${etDate}`;
     }
 
     function isVisibleStrategyChartTime(ts) {
@@ -2665,9 +2861,10 @@ _HTML = """<!doctype html>
       return etMinutes >= dayStart && etMinutes < dayEnd;
     }
 
-    function getSelectedStrategyChartOverlay() {
-      const checked = document.querySelector('input[name="strategyChartOverlayToggle"]:checked');
-      return checked ? checked.value : "";
+    function isMobileStrategyChartViewport() {
+      return typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(max-width: 720px)").matches;
     }
 
     function stepPath(points, xScale, yScale) {
@@ -2692,12 +2889,12 @@ _HTML = """<!doctype html>
       const meta = document.getElementById("strategyIndexChartMeta");
       const tooltip = document.getElementById("strategyIndexChartTooltip");
       const wrap = svg ? svg.closest(".chart-wrap") : null;
+      const mobileViewport = isMobileStrategyChartViewport();
       if (!svg || !meta || !tooltip || !wrap) return;
 
       svg.innerHTML = "";
       tooltip.classList.remove("visible");
       tooltip.innerHTML = "";
-      const overlayMode = getSelectedStrategyChartOverlay();
       const detailRows = (rows || []).filter((row) => !row.isStrategySummary);
       if (!detailRows.length) {
         meta.textContent = "No strategy data to chart.";
@@ -2719,41 +2916,12 @@ _HTML = """<!doctype html>
           tsDate,
           strategyPrice: Number(strategyPrice),
           strategyCost: strategyCost == null ? null : Number(strategyCost),
-          spotPrice: row.spot_price == null ? null : Number(row.spot_price),
-          vixPrice: row.vix_price == null ? null : Number(row.vix_price),
           expirationDate: String(row.expiration_date || ""),
         });
       });
 
       const stepMs = 15 * 60 * 1000;
       const tradeSeries = [];
-      function buildAlignedRawSteps(sorted, entryDate, valueKey) {
-        const points = sorted
-          .filter((p) => p[valueKey] != null && Number.isFinite(Number(p[valueKey])))
-          .map((p) => ({
-            elapsedMs: p.tsDate.getTime() - entryDate.getTime(),
-            value: Number(p[valueKey]),
-          }));
-        if (!points.length) return [];
-        const maxElapsed = points[points.length - 1].elapsedMs;
-        if (!Number.isFinite(maxElapsed) || maxElapsed < 0) return [];
-        const steps = [];
-        const maxStep = Math.floor(maxElapsed / stepMs);
-        for (let s = 0; s <= maxStep; s += 1) {
-          const ms = s * stepMs;
-          if (ms < points[0].elapsedMs || ms > maxElapsed) {
-            steps.push(null);
-            continue;
-          }
-          let value = points[0].value;
-          for (let i = 1; i < points.length; i += 1) {
-            if (ms < points[i].elapsedMs) break;
-            value = points[i].value;
-          }
-          steps.push(value == null ? null : Number(value));
-        }
-        return steps;
-      }
       Array.from(byTrade.entries())
         .sort((a, b) => Number(a[0]) - Number(b[0]))
         .forEach(([tradeKey, points]) => {
@@ -2777,7 +2945,8 @@ _HTML = """<!doctype html>
           if (!Number.isFinite(maxElapsed) || maxElapsed < 0) return;
 
           function carryForward(ms) {
-            if (ms < normalized[0].elapsedMs || ms > normalized[normalized.length - 1].elapsedMs) return null;
+            if (ms < normalized[0].elapsedMs) return null;
+            if (ms >= normalized[normalized.length - 1].elapsedMs) return normalized[normalized.length - 1].indexed;
             let value = normalized[0].indexed;
             for (let i = 1; i < normalized.length; i += 1) {
               if (ms < normalized[i].elapsedMs) break;
@@ -2787,7 +2956,7 @@ _HTML = """<!doctype html>
           }
 
           const steps = [];
-          const maxStep = Math.floor(maxElapsed / stepMs);
+          const maxStep = Math.ceil(maxElapsed / stepMs);
           for (let s = 0; s <= maxStep; s += 1) {
             const ms = s * stepMs;
             const val = carryForward(ms);
@@ -2800,8 +2969,6 @@ _HTML = """<!doctype html>
             entryCost: entry.strategyCost,
             expirationDate: entry.expirationDate,
             steps,
-            symbolSteps: buildAlignedRawSteps(sorted, entry.tsDate, "spotPrice"),
-            vixSteps: buildAlignedRawSteps(sorted, entry.tsDate, "vixPrice"),
           });
         });
 
@@ -2822,23 +2989,20 @@ _HTML = """<!doctype html>
         blended.push(vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
       }
 
-      const overlayValues = [];
-      for (let i = 0; i < maxSteps; i += 1) {
-        if (!overlayMode) {
-          overlayValues.push(null);
-          continue;
-        }
-        const vals = tradeSeries
-          .map((t) => (overlayMode === "vix" ? t.vixSteps[i] : t.symbolSteps[i]))
-          .filter((v) => v != null && Number.isFinite(v));
-        overlayValues.push(vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
-      }
-
       const firstTrade = tradeSeries[0];
       const sampleTimes = Array.from({ length: maxSteps }, (_, i) => new Date(firstTrade.entryDate.getTime() + i * stepMs));
-      const visibleIndices = sampleTimes
+      const finalBlendedIndex = (() => {
+        for (let i = blended.length - 1; i >= 0; i -= 1) {
+          if (blended[i] != null && Number.isFinite(blended[i])) return i;
+        }
+        return -1;
+      })();
+      const visibleIndexSet = new Set(sampleTimes
         .map((ts, idx) => (isVisibleStrategyChartTime(ts) ? idx : -1))
-        .filter((idx) => idx >= 0);
+        .filter((idx) => idx >= 0));
+      if (visibleIndexSet.size) visibleIndexSet.add(0);
+      if (finalBlendedIndex >= 0) visibleIndexSet.add(finalBlendedIndex);
+      const visibleIndices = Array.from(visibleIndexSet).sort((a, b) => a - b);
       if (!visibleIndices.length) {
         meta.textContent = "No intraday ET samples available for chart.";
         return;
@@ -2862,8 +3026,11 @@ _HTML = """<!doctype html>
       const yMax = Math.max(101, observedMax * 1.1);
 
       const width = 1200;
-      const height = 320;
-      const m = { top: 18, right: 56, bottom: 78, left: 56 };
+      const height = mobileViewport ? 440 : 320;
+      const m = mobileViewport
+        ? { top: 18, right: 26, bottom: 72, left: 48 }
+        : { top: 18, right: 56, bottom: 78, left: 56 };
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       const innerW = width - m.left - m.right;
       const innerH = height - m.top - m.bottom;
       const compressedXMax = Math.max(1, visibleIndices.length - 1);
@@ -2873,44 +3040,6 @@ _HTML = """<!doctype html>
         return m.left + (compressedIdx / compressedXMax) * innerW;
       };
       const yScale = (y) => m.top + ((yMax - y) / (yMax - yMin)) * innerH;
-
-      const overlayFinite = overlayValues.filter((v) => v != null && Number.isFinite(v));
-      let overlayYScale = null;
-      if (overlayFinite.length) {
-        let overlayMin = Math.min(...overlayFinite);
-        let overlayMax = Math.max(...overlayFinite);
-        if (Math.abs(overlayMax - overlayMin) < 1e-9) {
-          const pad = Math.max(1, Math.abs(overlayMax) * 0.03);
-          overlayMin -= pad;
-          overlayMax += pad;
-        } else {
-          const pad = (overlayMax - overlayMin) * 0.08;
-          overlayMin -= pad;
-          overlayMax += pad;
-        }
-        overlayYScale = (y) => m.top + ((overlayMax - y) / (overlayMax - overlayMin)) * innerH;
-
-        [overlayMax, (overlayMin + overlayMax) / 2, overlayMin].forEach((value) => {
-          const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          txt.setAttribute("x", String(m.left + innerW + 8));
-          txt.setAttribute("y", String(overlayYScale(value) + 4));
-          txt.setAttribute("text-anchor", "start");
-          txt.setAttribute("font-size", "11");
-          txt.setAttribute("fill", overlayMode === "vix" ? "#9a3412" : "#2563eb");
-          txt.textContent = formatStrategyOverlayValue(value, overlayMode);
-          svg.appendChild(txt);
-        });
-
-        const rightAxis = document.createElementNS("http://www.w3.org/2000/svg", "line");
-        rightAxis.setAttribute("x1", String(m.left + innerW));
-        rightAxis.setAttribute("x2", String(m.left + innerW));
-        rightAxis.setAttribute("y1", String(m.top));
-        rightAxis.setAttribute("y2", String(m.top + innerH));
-        rightAxis.setAttribute("stroke", overlayMode === "vix" ? "#c2410c" : "#2563eb");
-        rightAxis.setAttribute("stroke-width", "1");
-        rightAxis.setAttribute("opacity", "0.45");
-        svg.appendChild(rightAxis);
-      }
 
       const tradeTypes = new Set(
         tradeSeries.map((t) => (t.entryCost == null ? "unknown" : (t.entryCost < 0 ? "credit" : "debit")))
@@ -2939,7 +3068,7 @@ _HTML = """<!doctype html>
           txt.setAttribute("x", String(m.left - 8));
           txt.setAttribute("y", String(y + 4));
           txt.setAttribute("text-anchor", "end");
-          txt.setAttribute("font-size", "11");
+          txt.setAttribute("font-size", mobileViewport ? "11" : "11");
           txt.setAttribute("fill", "#64748b");
           txt.textContent = formatStrategyIndexAxisLabel(yVal);
           svg.appendChild(txt);
@@ -2962,7 +3091,7 @@ _HTML = """<!doctype html>
         baselineLabel.setAttribute("x", String(m.left - 8));
         baselineLabel.setAttribute("y", String(baselineY + 4));
         baselineLabel.setAttribute("text-anchor", "end");
-        baselineLabel.setAttribute("font-size", "11");
+        baselineLabel.setAttribute("font-size", mobileViewport ? "11" : "11");
         baselineLabel.setAttribute("fill", "#64748b");
         baselineLabel.textContent = "100%";
         svg.appendChild(baselineLabel);
@@ -3036,22 +3165,6 @@ _HTML = """<!doctype html>
         blendPath.setAttribute("stroke", "#0f172a");
         blendPath.setAttribute("stroke-width", "2.4");
         svg.appendChild(blendPath);
-      }
-
-      if (overlayYScale) {
-        const overlayPts = overlayValues
-          .map((v, i) => (v == null || !compressedIndexByOriginal.has(i) ? null : ({ x: i, y: v })))
-          .filter(Boolean);
-        if (overlayPts.length >= 2) {
-          const overlayPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-          overlayPath.setAttribute("d", stepPath(overlayPts, xScale, overlayYScale));
-          overlayPath.setAttribute("fill", "none");
-          overlayPath.setAttribute("stroke", overlayMode === "vix" ? "#c2410c" : "#2563eb");
-          overlayPath.setAttribute("stroke-width", "1.8");
-          overlayPath.setAttribute("stroke-dasharray", "6 4");
-          overlayPath.setAttribute("opacity", "0.7");
-          svg.appendChild(overlayPath);
-        }
       }
 
       const hoverGuide = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -3132,12 +3245,10 @@ _HTML = """<!doctype html>
         hoverMarker.setAttribute("cy", String(chartY));
         hoverMarker.setAttribute("opacity", "1");
 
-        const overlayValue = overlayMode ? overlayValues[idx] : null;
-        const overlayLabel = overlayMode === "vix" ? "VIX" : "Symbol";
-        const overlayMarkup = overlayValue != null && Number.isFinite(overlayValue)
-          ? `<div class="chart-tooltip-label">${escapeHtml(overlayLabel)}: ${escapeHtml(formatStrategyOverlayValue(overlayValue, overlayMode))}</div>`
-          : "";
-        tooltip.innerHTML = `<div class="chart-tooltip-label">${escapeHtml(formatLocalDateTime(ts))}</div><div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>${overlayMarkup}`;
+        tooltip.innerHTML = `
+          <div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>
+          <div class="chart-tooltip-debug">${escapeHtml(formatStrategyTooltipTimestamp(ts))}</div>
+        `;
         tooltip.classList.add("visible");
 
         const tooltipWidth = tooltip.offsetWidth || 0;
@@ -3155,7 +3266,7 @@ _HTML = """<!doctype html>
           : "translate(12px, -12px)";
       });
 
-      const tickTarget = 8;
+      const tickTarget = mobileViewport ? 3 : 8;
       const tickEvery = Math.max(1, Math.ceil(visibleIndices.length / tickTarget));
       for (let visiblePos = 0; visiblePos < visibleIndices.length; visiblePos += tickEvery) {
         const i = visibleIndices[visiblePos];
@@ -3175,12 +3286,14 @@ _HTML = """<!doctype html>
         const dte = dteForTs(dteRefExpiration, ts);
         const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
         label.setAttribute("x", String(x));
-        label.setAttribute("y", String(m.top + innerH + 22));
+        label.setAttribute("y", String(m.top + innerH + (mobileViewport ? 20 : 22)));
         label.setAttribute("text-anchor", "middle");
-        label.setAttribute("font-size", "10");
+        label.setAttribute("font-size", mobileViewport ? "11.5" : "10");
         label.setAttribute("fill", "#64748b");
-        label.textContent = `${hm} (DTE ${dte})`;
-        label.setAttribute("transform", `rotate(-28 ${x} ${m.top + innerH + 22})`);
+        label.textContent = mobileViewport ? hm : `${hm} (DTE ${dte})`;
+        if (!mobileViewport) {
+          label.setAttribute("transform", `rotate(-28 ${x} ${m.top + innerH + 22})`);
+        }
         svg.appendChild(label);
       }
 
@@ -3205,11 +3318,11 @@ _HTML = """<!doctype html>
       const meta = document.getElementById("strategyAnalysisMeta");
       const resolvedLegs = strategyState.legs.filter((leg) => leg.isResolved && Array.isArray(leg.resolved_contracts) && leg.resolved_contracts.length > 0);
       if (!resolvedLegs.length) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "Please resolve at least one leg.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -3222,11 +3335,11 @@ _HTML = """<!doctype html>
       const exitTime = document.getElementById("strategyExitTime").value || "";
       const allDates = Array.isArray(strategyState.snapshotDates) ? strategyState.snapshotDates : [];
       if (!allDates.length) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "No snapshot dates available for this symbol.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -3235,58 +3348,58 @@ _HTML = """<!doctype html>
       const entryTimes = resolvedLegs.map((leg) => parseHmToMinutes(leg.entry_time)).filter((value) => value != null);
       const latestEntryTime = entryTimes.length ? Math.max(...entryTimes) : null;
       if (fromDate > toDate) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "Snapshot From must not be after Snapshot To.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       if (!holdTillExpiry && (!Number.isFinite(exitDays) || exitDays < 0)) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "Exit days must be a non-negative integer.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       if (!holdTillExpiry && !exitTime) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "Exit Time is required.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       const exitMinutes = holdTillExpiry ? null : parseHmToMinutes(exitTime);
       if (!holdTillExpiry && exitMinutes == null) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "Exit time must be a valid ET time.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       if (!holdTillExpiry && exitDays === 0 && latestEntryTime != null && exitMinutes <= latestEntryTime) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "When exit days is 0, exit time must be later than the strategy entry time.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       const tradeDates = allDates.filter((d) => d >= fromDate && d <= toDate);
       if (!tradeDates.length) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "No snapshot dates in the selected range.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -3306,11 +3419,12 @@ _HTML = """<!doctype html>
               target_side: String(leg.side || "BUY"),
               window_minutes: "5",
               strict_dte: "1",
+              best_only: "1",
             });
             const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
             const payload = await res.json();
             if (!res.ok) return null;
-            const contracts = Array.isArray(payload.contracts) ? payload.contracts : [];
+            const contracts = Array.isArray(payload.contracts) ? payload.contracts : (payload.streamer_symbol ? [payload] : []);
             if (!contracts.length) return null;
             const best = contracts[0];
             return {
@@ -3340,31 +3454,31 @@ _HTML = """<!doctype html>
         });
       }
       if (!tradePlans.length) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "No daily trades could be opened at the requested entry time/delta in this range.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
 
       const streamers = Array.from(new Set(tradePlans.flatMap((trade) => trade.legs.map((leg) => leg.streamer_symbol))));
       if (!streamers.length) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "No contracts resolved for the current legs.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
       if (streamers.length > MAX_STRATEGY_ANALYSIS_STREAMERS) {
+        setStrategyResultsVisibility(false);
         meta.textContent = `Resolved contracts exceed ${MAX_STRATEGY_ANALYSIS_STREAMERS} streamers for series analysis. Reduce selected range or legs.`;
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -3388,11 +3502,11 @@ _HTML = """<!doctype html>
       const seriesData = await seriesRes.json();
       const summaryData = await summaryRes.json();
       if (!seriesRes.ok) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "Error loading series: " + (seriesData.error || "unknown");
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
         renderStrategyIndexChart([]);
         return;
       }
@@ -3403,6 +3517,7 @@ _HTML = """<!doctype html>
 
       const rows = Array.isArray(seriesData.rows) ? seriesData.rows : [];
       if (!rows.length) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "No data for the selected legs.";
         meta.className = "meta danger";
         renderStrategyStats([]);
@@ -3413,6 +3528,7 @@ _HTML = """<!doctype html>
       }
       const transformed = transformStrategySeriesRows(rows, summaryData.market_series || [], tradePlans, { holdTillExpiry, exitDays, exitTime });
       if (!transformed.length) {
+        setStrategyResultsVisibility(false);
         meta.textContent = "No completed trades yet for the selected exit criteria.";
         meta.className = "meta danger";
         renderStrategyStats([]);
@@ -3427,9 +3543,9 @@ _HTML = """<!doctype html>
           .map((row) => row.streamer_symbol)
           .filter((value) => value != null && value !== "")
       ).size;
+      setStrategyResultsVisibility(true);
       renderStrategyStats(transformed);
       renderStrategySeriesTable(transformed);
-      renderStrategyTradeMatrixTable(transformed);
       renderStrategyIndexChart(transformed);
       meta.textContent = "";
       meta.className = "meta";
@@ -3445,22 +3561,9 @@ _HTML = """<!doctype html>
         .addEventListener("change", loadStrategySnapshotDateOptions);
       document.getElementById("strategyResolveBtn").addEventListener("click", resolveStrategyLeg);
       document.getElementById("strategyRunBtn").addEventListener("click", runStrategyAnalysis);
-      document.querySelectorAll('input[name="strategyChartOverlayToggle"]').forEach((inputEl) => {
-        inputEl.addEventListener("change", (event) => {
-          const current = event.currentTarget;
-          if (current.checked) {
-            document.querySelectorAll('input[name="strategyChartOverlayToggle"]').forEach((other) => {
-              if (other !== current) other.checked = false;
-            });
-            strategyState.chartOverlay = current.value || "";
-          } else {
-            strategyState.chartOverlay = "";
-          }
-          renderStrategyIndexChart(strategyState.historyRows || []);
-        });
-      });
       document.getElementById("strategyHoldToExpiry").addEventListener("change", refreshStrategyExitCriteriaState);
       refreshStrategyExitCriteriaState();
+      setStrategyResultsVisibility(false);
       renderStrategyLegsTable();
     }
 
@@ -3473,10 +3576,16 @@ _HTML = """<!doctype html>
       if (!fromEl || !toEl || !fromList || !toList) return;
 
       try {
-        const res = await fetch(`/api/options/snapshot-dates?symbol=${encodeURIComponent(symbol)}`);
-        const payload = await res.json();
-        if (!res.ok) {
+        const [datesRes, typesRes] = await Promise.all([
+          fetch(`/api/options/snapshot-dates?symbol=${encodeURIComponent(symbol)}`),
+          fetch(`/api/options/option-types?symbol=${encodeURIComponent(symbol)}`),
+        ]);
+        const payload = await datesRes.json();
+        const typesPayload = await typesRes.json();
+        if (!datesRes.ok || !typesRes.ok) {
           strategyState.snapshotDates = [];
+          strategyState.optionTypes = [];
+          populateStrategyOptionTypeOptions([]);
           fromList.innerHTML = "";
           toList.innerHTML = "";
           fromEl.value = "";
@@ -3485,7 +3594,9 @@ _HTML = """<!doctype html>
         }
 
         const dates = Array.isArray(payload.dates) ? payload.dates : [];
+        const optionTypes = Array.isArray(typesPayload.option_types) ? typesPayload.option_types : [];
         strategyState.snapshotDates = dates;
+        populateStrategyOptionTypeOptions(optionTypes);
 
         const html = dates.map((d) => `<option value="${escapeHtml(String(d))}"></option>`).join("");
         fromList.innerHTML = html;
@@ -3515,6 +3626,8 @@ _HTML = """<!doctype html>
         }
       } catch {
         strategyState.snapshotDates = [];
+        strategyState.optionTypes = [];
+        populateStrategyOptionTypeOptions([]);
         fromList.innerHTML = "";
         toList.innerHTML = "";
         fromEl.value = "";

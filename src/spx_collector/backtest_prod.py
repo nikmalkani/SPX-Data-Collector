@@ -11,6 +11,16 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from .config import Settings
+from .tracking import (
+    METRICS_HTML,
+    build_common_legs_payload,
+    build_overview_payload,
+    build_recent_runs_payload,
+    build_timeseries_payload,
+    ensure_tracking_db,
+    insert_tracking_event,
+    parse_metrics_date_range,
+)
 
 
 def _resolve_sqlite_path(db_url: str) -> Path:
@@ -75,6 +85,10 @@ def _html_response(handler: BaseHTTPRequestHandler, html: str) -> None:
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
     handler.wfile.write(data)
+
+
+def _render_app_html(*, tracking_enabled: bool) -> str:
+    return _HTML.replace("__TRACKING_ENABLED__", "true" if tracking_enabled else "false")
 
 
 def _schema_payload(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -843,15 +857,93 @@ def _get_qs(params: dict[str, list[str]], key: str, default: str | None = None) 
 
 class SqlUiHandler(BaseHTTPRequestHandler):
     db_path: Path
+    tracking_db_path: Path | None = None
+    tracking_enabled: bool = False
+    tracking_metrics_enabled: bool = False
 
     def do_GET(self) -> None:  # noqa: N802
         path, qs = _get_query_params(self.path)
 
         if path == "/":
-            _html_response(self, _HTML)
+            _html_response(self, _render_app_html(tracking_enabled=self.tracking_enabled))
+            return
+        if path == "/ops/metrics":
+            if not self.tracking_metrics_enabled:
+                _json_response(self, {"error": "not_found"}, status=404)
+                return
+            _html_response(self, METRICS_HTML)
             return
         if path == "/api/health":
-            _json_response(self, {"ok": True, "db_path": str(self.db_path)})
+            _json_response(
+                self,
+                {
+                    "ok": True,
+                    "db_path": str(self.db_path),
+                    "tracking_enabled": self.tracking_enabled,
+                    "tracking_metrics_enabled": self.tracking_metrics_enabled,
+                    "tracking_db_path": str(self.tracking_db_path) if self.tracking_db_path else None,
+                },
+            )
+            return
+        if path == "/api/ops/metrics/overview":
+            if not self.tracking_metrics_enabled or self.tracking_db_path is None:
+                _json_response(self, {"error": "not_found"}, status=404)
+                return
+            try:
+                from_date, to_date = parse_metrics_date_range(
+                    _get_qs(qs, "from"), _get_qs(qs, "to")
+                )
+                payload = build_overview_payload(
+                    self.tracking_db_path, from_date=from_date, to_date=to_date
+                )
+                _json_response(self, payload)
+            except Exception as exc:
+                _error_response(self, str(exc))
+            return
+        if path == "/api/ops/metrics/timeseries":
+            if not self.tracking_metrics_enabled or self.tracking_db_path is None:
+                _json_response(self, {"error": "not_found"}, status=404)
+                return
+            try:
+                from_date, to_date = parse_metrics_date_range(
+                    _get_qs(qs, "from"), _get_qs(qs, "to")
+                )
+                payload = build_timeseries_payload(
+                    self.tracking_db_path, from_date=from_date, to_date=to_date
+                )
+                _json_response(self, payload)
+            except Exception as exc:
+                _error_response(self, str(exc))
+            return
+        if path == "/api/ops/metrics/runs":
+            if not self.tracking_metrics_enabled or self.tracking_db_path is None:
+                _json_response(self, {"error": "not_found"}, status=404)
+                return
+            try:
+                from_date, to_date = parse_metrics_date_range(
+                    _get_qs(qs, "from"), _get_qs(qs, "to")
+                )
+                payload = build_recent_runs_payload(
+                    self.tracking_db_path, from_date=from_date, to_date=to_date
+                )
+                _json_response(self, payload)
+            except Exception as exc:
+                _error_response(self, str(exc))
+            return
+        if path == "/api/ops/metrics/common-legs":
+            if not self.tracking_metrics_enabled or self.tracking_db_path is None:
+                _json_response(self, {"error": "not_found"}, status=404)
+                return
+            try:
+                from_date, to_date = parse_metrics_date_range(
+                    _get_qs(qs, "from"), _get_qs(qs, "to")
+                )
+                payload = build_common_legs_payload(
+                    self.tracking_db_path, from_date=from_date, to_date=to_date
+                )
+                _json_response(self, payload)
+            except Exception as exc:
+                _error_response(self, str(exc))
             return
         if path == "/api/schema":
             with sqlite3.connect(self.db_path) as conn:
@@ -988,16 +1080,27 @@ class SqlUiHandler(BaseHTTPRequestHandler):
         _json_response(self, {"error": "not_found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/query", "/api/options/strategy-history"}:
+        path, _ = _get_query_params(self.path)
+        if path not in {"/api/query", "/api/options/strategy-history", "/api/track"}:
             _json_response(self, {"error": "not_found"}, status=404)
             return
 
         try:
             raw_len = int(self.headers.get("Content-Length", "0"))
+            if raw_len > 32_768:
+                raise ValueError("Request body too large.")
             body = self.rfile.read(raw_len).decode("utf-8")
             parsed = json.loads(body)
 
-            if self.path == "/api/query":
+            if path == "/api/track":
+                if not self.tracking_enabled or self.tracking_db_path is None:
+                    _json_response(self, {"error": "tracking_disabled"}, status=404)
+                    return
+                payload = insert_tracking_event(self.tracking_db_path, parsed)
+                _json_response(self, payload, status=202)
+                return
+
+            if path == "/api/query":
                 query = str(parsed.get("query", ""))
                 with sqlite3.connect(self.db_path) as conn:
                     payload = _run_query(conn, query)
@@ -1048,8 +1151,16 @@ def main() -> None:
     db_path = _resolve_sqlite_path(settings.db_url)
     if not db_path.exists():
         raise FileNotFoundError(f"SQLite DB not found at {db_path}")
+    tracking_db_path = None
+    if settings.tracking_enabled or settings.tracking_metrics_enabled:
+        tracking_db_path = ensure_tracking_db(settings.tracking_db_url)
 
     SqlUiHandler.db_path = db_path
+    SqlUiHandler.tracking_db_path = tracking_db_path
+    SqlUiHandler.tracking_enabled = bool(settings.tracking_enabled and tracking_db_path)
+    SqlUiHandler.tracking_metrics_enabled = bool(
+        settings.tracking_metrics_enabled and tracking_db_path
+    )
     server = ThreadingHTTPServer((args.host, args.port), SqlUiHandler)
     print(f"Backtest prod UI running at http://{args.host}:{args.port} using {db_path}")
     server.serve_forever()
@@ -1928,6 +2039,12 @@ _HTML = """<!doctype html>
     const MAX_STRATEGY_RESOLVED_CONTRACTS = 50;
     const MAX_STRATEGY_ANALYSIS_STREAMERS = 120;
     const MINUTE_DIFF_LABEL = 60;
+    const TRACKING_ENABLED = __TRACKING_ENABLED__;
+    const TRACKING_ANON_KEY = "marketplayground_tracking_anonymous_id";
+    const TRACKING_SESSION_KEY = "marketplayground_tracking_session_id";
+    const TRACKING_LAST_SEEN_KEY = "marketplayground_tracking_last_seen_at";
+    const TRACKING_IDLE_MS = 30 * 60 * 1000;
+    const trackingFallbackStore = {};
 
     const strategyState = {
       symbol: "SPX",
@@ -1954,6 +2071,125 @@ _HTML = """<!doctype html>
       tableRows: [],
       lastMeta: "",
     };
+
+    function trackingRead(key) {
+      try {
+        return window.localStorage.getItem(key) || trackingFallbackStore[key] || "";
+      } catch {
+        return trackingFallbackStore[key] || "";
+      }
+    }
+
+    function trackingWrite(key, value) {
+      trackingFallbackStore[key] = value;
+      try {
+        window.localStorage.setItem(key, value);
+      } catch {}
+    }
+
+    function randomTrackingId() {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        return window.crypto.randomUUID();
+      }
+      return `mp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function getAnonymousTrackingId() {
+      let current = trackingRead(TRACKING_ANON_KEY);
+      if (current) return current;
+      current = randomTrackingId();
+      trackingWrite(TRACKING_ANON_KEY, current);
+      return current;
+    }
+
+    function getTrackingSessionId() {
+      const now = Date.now();
+      const current = trackingRead(TRACKING_SESSION_KEY);
+      const lastSeenRaw = trackingRead(TRACKING_LAST_SEEN_KEY);
+      const lastSeen = parseInt(lastSeenRaw || "0", 10);
+      const needsRefresh = !current || !Number.isFinite(lastSeen) || now - lastSeen > TRACKING_IDLE_MS;
+      const next = needsRefresh ? randomTrackingId() : current;
+      trackingWrite(TRACKING_SESSION_KEY, next);
+      trackingWrite(TRACKING_LAST_SEEN_KEY, String(now));
+      return next;
+    }
+
+    function getTrackingReferrerHost() {
+      try {
+        if (!document.referrer) return "";
+        return new URL(document.referrer).host || "";
+      } catch {
+        return "";
+      }
+    }
+
+    function sanitizeTrackingLeg(leg) {
+      return {
+        side: String(leg.side || "").toUpperCase(),
+        option_type: String(leg.option_type || "").toUpperCase(),
+        target_delta: leg.target_delta == null ? null : Number(leg.target_delta),
+        target_dte: leg.target_dte == null ? null : Number(leg.target_dte),
+        quantity: leg.quantity == null ? 1 : Number(leg.quantity),
+        entry_time: String(leg.entry_time || ""),
+        snapshot_from_date: String(leg.snapshot_from_date || ""),
+        snapshot_to_date: String(leg.snapshot_to_date || ""),
+      };
+    }
+
+    function currentStrategyLegsForTracking() {
+      return strategyState.legs.map((leg) => sanitizeTrackingLeg(leg));
+    }
+
+    function currentStrategyRunTrackingPayload() {
+      const symbol = document.getElementById("strategySymbol")?.value || "SPX";
+      const snapshotDates = Array.isArray(strategyState.snapshotDates) ? strategyState.snapshotDates : [];
+      const snapshotFromDate = document.getElementById("strategySnapshotFromDate")?.value || "";
+      const snapshotToDate = document.getElementById("strategySnapshotToDate")?.value || "";
+      return {
+        symbol,
+        legs: currentStrategyLegsForTracking(),
+        leg_count: strategyState.legs.length,
+        snapshot_from_date: snapshotFromDate || snapshotDates[0] || "",
+        snapshot_to_date: snapshotToDate || snapshotDates[snapshotDates.length - 1] || "",
+        hold_till_expiry: Boolean(document.getElementById("strategyHoldToExpiry")?.checked),
+        exit_days: parseInt(document.getElementById("strategyExitDays")?.value || "0", 10),
+        exit_time: document.getElementById("strategyExitTime")?.value || "",
+      };
+    }
+
+    function trackEvent(eventName, data, outcome) {
+      if (!TRACKING_ENABLED) return Promise.resolve(null);
+      const payload = {
+        event_name: eventName,
+        event_version: 1,
+        anonymous_id: getAnonymousTrackingId(),
+        session_id: getTrackingSessionId(),
+        page_path: window.location.pathname || "/",
+        referrer_host: getTrackingReferrerHost(),
+        occurred_at: new Date().toISOString(),
+        data: data && typeof data === "object" ? data : {},
+      };
+      if (outcome) payload.outcome = outcome;
+      const body = JSON.stringify(payload);
+      try {
+        if (navigator.sendBeacon) {
+          const blob = new Blob([body], { type: "application/json" });
+          if (navigator.sendBeacon("/api/track", blob)) {
+            return Promise.resolve(true);
+          }
+        }
+      } catch {}
+      return fetch("/api/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      }).catch(() => null);
+    }
+
+    function trackPageView() {
+      trackEvent("page_view", { title: document.title });
+    }
 
     function escapeHtml(v) {
       const s = v === null || v === undefined ? "" : String(v);
@@ -2262,6 +2498,16 @@ _HTML = """<!doctype html>
       refreshStrategyRunButtonVisibility();
     }
 
+    function trackStrategyLegResult(outcome, payload, extra) {
+      const merged = Object.assign({}, payload || {}, extra || {});
+      return trackEvent("strategy_leg_add_result", merged, outcome);
+    }
+
+    function trackStrategyRunResult(outcome, extra) {
+      const merged = Object.assign({}, currentStrategyRunTrackingPayload(), extra || {});
+      return trackEvent("strategy_run_result", merged, outcome);
+    }
+
     async function resolveStrategyLeg() {
       const meta = document.getElementById("strategyBuilderMeta");
       const symbol = document.getElementById("strategySymbol").value || "SPX";
@@ -2274,38 +2520,54 @@ _HTML = """<!doctype html>
       const snapshotToDate = document.getElementById("strategySnapshotToDate").value || "";
       const snapshotDates = Array.isArray(strategyState.snapshotDates) ? strategyState.snapshotDates : [];
       const hasSnapshotDate = (value) => !value || snapshotDates.includes(value);
+      const roundedTargetDelta = Number.isFinite(targetDelta) ? Math.round(targetDelta) : null;
+      const trackingPayload = {
+        symbol,
+        side,
+        option_type: optionType,
+        target_delta: roundedTargetDelta,
+        target_dte: Number.isFinite(dte) ? dte : null,
+        entry_time: entryTime,
+        snapshot_from_date: snapshotFromDate,
+        snapshot_to_date: snapshotToDate,
+      };
+      trackEvent("strategy_leg_add_attempt", trackingPayload);
+
+      function fail(message, reason, outcome = "validation_error", extra = {}) {
+        meta.textContent = message;
+        meta.className = "meta danger";
+        trackStrategyLegResult(outcome, trackingPayload, Object.assign({ reason }, extra));
+      }
 
       if (!entryTime) {
-        meta.textContent = "Entry Time is required.";
-        meta.className = "meta danger";
+        fail("Entry Time is required.", "missing_entry_time");
         return;
       }
       if (!Number.isFinite(dte) || dte < 0) {
-        meta.textContent = "DTE must be a non-negative integer.";
-        meta.className = "meta danger";
+        fail("DTE must be a non-negative integer.", "invalid_dte");
         return;
       }
       if (!Number.isFinite(targetDelta) || targetDelta <= 0) {
-        meta.textContent = "Delta must be > 0.";
-        meta.className = "meta danger";
+        fail("Delta must be > 0.", "invalid_delta");
         return;
       }
-      const roundedTargetDelta = Math.round(targetDelta);
       if (!snapshotDates.length) {
-        meta.textContent = "No snapshot dates available for this symbol.";
-        meta.className = "meta danger";
+        fail("No snapshot dates available for this symbol.", "no_snapshot_dates");
         return;
       }
       if (!hasSnapshotDate(snapshotFromDate) || !hasSnapshotDate(snapshotToDate)) {
-        meta.textContent = "Choose Snapshot From/To dates from the available snapshot dates.";
-        meta.className = "meta danger";
+        fail(
+          "Choose Snapshot From/To dates from the available snapshot dates.",
+          "invalid_snapshot_dates"
+        );
         return;
       }
       const effectiveFromDate = snapshotFromDate || snapshotDates[0];
       const effectiveToDate = snapshotToDate || snapshotDates[snapshotDates.length - 1];
+      trackingPayload.snapshot_from_date = effectiveFromDate;
+      trackingPayload.snapshot_to_date = effectiveToDate;
       if (effectiveFromDate > effectiveToDate) {
-        meta.textContent = "Snapshot From must not be after Snapshot To.";
-        meta.className = "meta danger";
+        fail("Snapshot From must not be after Snapshot To.", "invalid_snapshot_range");
         return;
       }
       if (hasMatchingStrategyLeg({
@@ -2317,8 +2579,10 @@ _HTML = """<!doctype html>
         snapshot_from_date: effectiveFromDate,
         snapshot_to_date: effectiveToDate,
       })) {
-        meta.textContent = "You already have a leg with matching criteria added. Feel free to adjust the quantity.";
-        meta.className = "meta danger";
+        fail(
+          "You already have a leg with matching criteria added. Feel free to adjust the quantity.",
+          "duplicate_leg"
+        );
         return;
       }
 
@@ -2335,40 +2599,52 @@ _HTML = """<!doctype html>
       params.set("snapshot_to", `${effectiveToDate}T23:59:59`);
       params.set("best_only", "1");
 
-      const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
-      const payload = await res.json();
-      const resolvedContracts = Array.isArray(payload.contracts) ? payload.contracts : (payload.streamer_symbol ? [payload] : []);
-      if (!res.ok || !resolvedContracts.length) {
-        meta.textContent = "Could not resolve leg: " + (payload.error || "no match found.");
-        meta.className = "meta danger";
-        return;
-      }
+      try {
+        const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
+        const payload = await res.json();
+        const resolvedContracts = Array.isArray(payload.contracts) ? payload.contracts : (payload.streamer_symbol ? [payload] : []);
+        if (!res.ok || !resolvedContracts.length) {
+          fail(
+            "Could not resolve leg: " + (payload.error || "no match found."),
+            payload.error || "no_match_found",
+            "no_match"
+          );
+          return;
+        }
 
-      const keptContracts = resolvedContracts.slice(0, MAX_STRATEGY_RESOLVED_CONTRACTS);
-      if (!keptContracts.length) {
+        const keptContracts = resolvedContracts.slice(0, MAX_STRATEGY_RESOLVED_CONTRACTS);
+        if (!keptContracts.length) {
+          trackStrategyLegResult("no_match", trackingPayload, { reason: "no_kept_contracts" });
+          meta.textContent = "";
+          meta.className = "meta";
+          renderStrategyLegsTable();
+          return;
+        }
+        strategyState.legs.push({
+          id: strategyState.nextLegId++,
+          side,
+          quantity: 1,
+          option_type: optionType,
+          target_delta: roundedTargetDelta,
+          target_dte: dte,
+          entry_time: entryTime,
+          snapshot_from_date: effectiveFromDate,
+          snapshot_to_date: effectiveToDate,
+          isResolved: true,
+          matched_count: Number(payload.count) > 0 ? Number(payload.count) : keptContracts.length,
+          entry_snapshot_ts: keptContracts[0] ? keptContracts[0].snapshot_ts : null,
+          resolved_contracts: keptContracts,
+        });
         meta.textContent = "";
         meta.className = "meta";
+        trackStrategyLegResult("success", trackingPayload, {
+          matched_count: Number(payload.count) > 0 ? Number(payload.count) : keptContracts.length,
+          resolved_count: keptContracts.length,
+        });
         renderStrategyLegsTable();
-        return;
+      } catch {
+        fail("Could not resolve leg: request failed.", "request_failed", "error");
       }
-      strategyState.legs.push({
-        id: strategyState.nextLegId++,
-        side,
-        quantity: 1,
-        option_type: optionType,
-        target_delta: roundedTargetDelta,
-        target_dte: dte,
-        entry_time: entryTime,
-        snapshot_from_date: effectiveFromDate,
-        snapshot_to_date: effectiveToDate,
-        isResolved: true,
-        matched_count: Number(payload.count) > 0 ? Number(payload.count) : keptContracts.length,
-        entry_snapshot_ts: keptContracts[0] ? keptContracts[0].snapshot_ts : null,
-        resolved_contracts: keptContracts,
-      });
-      meta.textContent = "";
-      meta.className = "meta";
-      renderStrategyLegsTable();
     }
 
     function transformStrategySeriesRows(rows, spotSeries, tradePlans, exitCriteria) {
@@ -3144,20 +3420,6 @@ _HTML = """<!doctype html>
         svg.appendChild(path);
       }
 
-      tradeSeries.forEach((series) => {
-        const pts = series.steps
-          .map((v, i) => (v == null || !compressedIndexByOriginal.has(i) ? null : ({ x: i, y: v })))
-          .filter(Boolean);
-        if (pts.length < 2) return;
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", stepPath(pts, xScale, yScale));
-        path.setAttribute("fill", "none");
-        path.setAttribute("stroke", "#94a3b8");
-        path.setAttribute("stroke-width", "1");
-        path.setAttribute("opacity", "0.55");
-        svg.appendChild(path);
-      });
-
       if (visibleBlendPts.length >= 2) {
         const blendPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
         blendPath.setAttribute("d", stepPath(visibleBlendPts, xScale, yScale));
@@ -3317,6 +3579,7 @@ _HTML = """<!doctype html>
     async function runStrategyAnalysis() {
       const meta = document.getElementById("strategyAnalysisMeta");
       const resolvedLegs = strategyState.legs.filter((leg) => leg.isResolved && Array.isArray(leg.resolved_contracts) && leg.resolved_contracts.length > 0);
+      trackEvent("strategy_run_attempt", currentStrategyRunTrackingPayload());
       if (!resolvedLegs.length) {
         setStrategyResultsVisibility(false);
         meta.textContent = "Please resolve at least one leg.";
@@ -3324,6 +3587,7 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("validation_error", { reason: "no_resolved_legs" });
         return;
       }
 
@@ -3341,6 +3605,7 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("validation_error", { reason: "no_snapshot_dates" });
         return;
       }
       const fromDate = snapshotFromDate || allDates[0];
@@ -3354,6 +3619,7 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("validation_error", { reason: "invalid_snapshot_range" });
         return;
       }
       if (!holdTillExpiry && (!Number.isFinite(exitDays) || exitDays < 0)) {
@@ -3363,6 +3629,7 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("validation_error", { reason: "invalid_exit_days" });
         return;
       }
       if (!holdTillExpiry && !exitTime) {
@@ -3372,6 +3639,7 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("validation_error", { reason: "missing_exit_time" });
         return;
       }
       const exitMinutes = holdTillExpiry ? null : parseHmToMinutes(exitTime);
@@ -3382,6 +3650,7 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("validation_error", { reason: "invalid_exit_time" });
         return;
       }
       if (!holdTillExpiry && exitDays === 0 && latestEntryTime != null && exitMinutes <= latestEntryTime) {
@@ -3391,6 +3660,7 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("validation_error", { reason: "exit_not_after_entry" });
         return;
       }
       const tradeDates = allDates.filter((d) => d >= fromDate && d <= toDate);
@@ -3401,154 +3671,206 @@ _HTML = """<!doctype html>
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
+        trackStrategyRunResult("empty", { reason: "no_trade_dates" });
         return;
       }
 
-      const tradePlans = [];
-      let skippedDates = 0;
-      for (const tradeDate of tradeDates) {
-        const legResults = await Promise.all(
-          resolvedLegs.map(async (leg) => {
-            const params = new URLSearchParams({
-              symbol,
-              option_type: String(leg.option_type || "PUT"),
-              dte: String(Number(leg.target_dte)),
-              target_delta: String(Number(leg.target_delta)),
-              entry_time: String(leg.entry_time || ""),
-              entry_date: tradeDate,
-              target_side: String(leg.side || "BUY"),
-              window_minutes: "5",
-              strict_dte: "1",
-              best_only: "1",
-            });
-            const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
-            const payload = await res.json();
-            if (!res.ok) return null;
-            const contracts = Array.isArray(payload.contracts) ? payload.contracts : (payload.streamer_symbol ? [payload] : []);
-            if (!contracts.length) return null;
-            const best = contracts[0];
-            return {
-              leg_def: leg,
-              sign: leg.side === "SELL" ? -1 : 1,
-              quantity: Number(leg.quantity) > 0 ? Number(leg.quantity) : 1,
-              streamer_symbol: best.streamer_symbol,
-              entry_snapshot_ts: best.snapshot_ts,
-              contract: {
+      try {
+        const tradePlans = [];
+        let skippedDates = 0;
+        for (const tradeDate of tradeDates) {
+          const legResults = await Promise.all(
+            resolvedLegs.map(async (leg) => {
+              const params = new URLSearchParams({
+                symbol,
+                option_type: String(leg.option_type || "PUT"),
+                dte: String(Number(leg.target_dte)),
+                target_delta: String(Number(leg.target_delta)),
+                entry_time: String(leg.entry_time || ""),
+                entry_date: tradeDate,
+                target_side: String(leg.side || "BUY"),
+                window_minutes: "5",
+                strict_dte: "1",
+                best_only: "1",
+              });
+              const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
+              const payload = await res.json();
+              if (!res.ok) return null;
+              const contracts = Array.isArray(payload.contracts) ? payload.contracts : (payload.streamer_symbol ? [payload] : []);
+              if (!contracts.length) return null;
+              const best = contracts[0];
+              return {
+                leg_def: leg,
+                sign: leg.side === "SELL" ? -1 : 1,
+                quantity: Number(leg.quantity) > 0 ? Number(leg.quantity) : 1,
                 streamer_symbol: best.streamer_symbol,
-                option_type: best.option_type,
-                strike_price: best.strike_price,
-                expiration_date: best.expiration_date,
-              },
-            };
-          })
-        );
-        const legs = legResults.filter(Boolean);
-        if (legs.length !== resolvedLegs.length) {
-          skippedDates += 1;
-          continue;
+                entry_snapshot_ts: best.snapshot_ts,
+                contract: {
+                  streamer_symbol: best.streamer_symbol,
+                  option_type: best.option_type,
+                  strike_price: best.strike_price,
+                  expiration_date: best.expiration_date,
+                },
+              };
+            })
+          );
+          const legs = legResults.filter(Boolean);
+          if (legs.length !== resolvedLegs.length) {
+            skippedDates += 1;
+            continue;
+          }
+          tradePlans.push({
+            trade_index: tradePlans.length + 1,
+            trade_date: tradeDate,
+            legs,
+          });
         }
-        tradePlans.push({
-          trade_index: tradePlans.length + 1,
-          trade_date: tradeDate,
-          legs,
+        if (!tradePlans.length) {
+          setStrategyResultsVisibility(false);
+          meta.textContent = "No daily trades could be opened at the requested entry time/delta in this range.";
+          meta.className = "meta danger";
+          renderStrategyStats([]);
+          renderStrategySeriesTable([]);
+          renderStrategyIndexChart([]);
+          trackStrategyRunResult("empty", {
+            reason: "no_trade_plans",
+            trade_dates_count: tradeDates.length,
+            skipped_dates: skippedDates,
+          });
+          return;
+        }
+
+        const streamers = Array.from(new Set(tradePlans.flatMap((trade) => trade.legs.map((leg) => leg.streamer_symbol))));
+        if (!streamers.length) {
+          setStrategyResultsVisibility(false);
+          meta.textContent = "No contracts resolved for the current legs.";
+          meta.className = "meta danger";
+          renderStrategyStats([]);
+          renderStrategySeriesTable([]);
+          renderStrategyIndexChart([]);
+          trackStrategyRunResult("empty", {
+            reason: "no_streamers",
+            trade_plan_count: tradePlans.length,
+            skipped_dates: skippedDates,
+          });
+          return;
+        }
+        if (streamers.length > MAX_STRATEGY_ANALYSIS_STREAMERS) {
+          setStrategyResultsVisibility(false);
+          meta.textContent = `Resolved contracts exceed ${MAX_STRATEGY_ANALYSIS_STREAMERS} streamers for series analysis. Reduce selected range or legs.`;
+          meta.className = "meta danger";
+          renderStrategyStats([]);
+          renderStrategySeriesTable([]);
+          renderStrategyIndexChart([]);
+          trackStrategyRunResult("validation_error", {
+            reason: "too_many_streamers",
+            trade_plan_count: tradePlans.length,
+            completed_contract_count: streamers.length,
+            skipped_dates: skippedDates,
+          });
+          return;
+        }
+        const seriesParams = new URLSearchParams({
+          symbol,
+          streamers: streamers.join(","),
+          field: "mid_price",
+          from: `${fromDate}T00:00:00`,
+          to: `${toDate}T23:59:59`,
         });
-      }
-      if (!tradePlans.length) {
-        setStrategyResultsVisibility(false);
-        meta.textContent = "No daily trades could be opened at the requested entry time/delta in this range.";
-        meta.className = "meta danger";
-        renderStrategyStats([]);
-        renderStrategySeriesTable([]);
-        renderStrategyIndexChart([]);
-        return;
-      }
+        const summaryParams = new URLSearchParams({
+          symbol,
+          from: `${fromDate}T00:00:00`,
+          to: `${toDate}T23:59:59`,
+        });
 
-      const streamers = Array.from(new Set(tradePlans.flatMap((trade) => trade.legs.map((leg) => leg.streamer_symbol))));
-      if (!streamers.length) {
-        setStrategyResultsVisibility(false);
-        meta.textContent = "No contracts resolved for the current legs.";
-        meta.className = "meta danger";
-        renderStrategyStats([]);
-        renderStrategySeriesTable([]);
-        renderStrategyIndexChart([]);
-        return;
-      }
-      if (streamers.length > MAX_STRATEGY_ANALYSIS_STREAMERS) {
-        setStrategyResultsVisibility(false);
-        meta.textContent = `Resolved contracts exceed ${MAX_STRATEGY_ANALYSIS_STREAMERS} streamers for series analysis. Reduce selected range or legs.`;
-        meta.className = "meta danger";
-        renderStrategyStats([]);
-        renderStrategySeriesTable([]);
-        renderStrategyIndexChart([]);
-        return;
-      }
-      const seriesParams = new URLSearchParams({
-        symbol,
-        streamers: streamers.join(","),
-        field: "mid_price",
-        from: `${fromDate}T00:00:00`,
-        to: `${toDate}T23:59:59`,
-      });
-      const summaryParams = new URLSearchParams({
-        symbol,
-        from: `${fromDate}T00:00:00`,
-        to: `${toDate}T23:59:59`,
-      });
+        const [seriesRes, summaryRes] = await Promise.all([
+          fetch(`/api/options/series?${seriesParams.toString()}`),
+          fetch(`/api/options/summary?${summaryParams.toString()}`),
+        ]);
+        const seriesData = await seriesRes.json();
+        const summaryData = await summaryRes.json();
+        if (!seriesRes.ok) {
+          setStrategyResultsVisibility(false);
+          meta.textContent = "Error loading series: " + (seriesData.error || "unknown");
+          meta.className = "meta danger";
+          renderStrategyStats([]);
+          renderStrategySeriesTable([]);
+          renderStrategyIndexChart([]);
+          trackStrategyRunResult("error", {
+            reason: seriesData.error || "series_error",
+            trade_plan_count: tradePlans.length,
+            skipped_dates: skippedDates,
+          });
+          return;
+        }
+        if (!summaryRes.ok) {
+          meta.textContent = "Warning: could not load spot/summary data.";
+          meta.className = "meta danger";
+        }
 
-      const [seriesRes, summaryRes] = await Promise.all([
-        fetch(`/api/options/series?${seriesParams.toString()}`),
-        fetch(`/api/options/summary?${summaryParams.toString()}`),
-      ]);
-      const seriesData = await seriesRes.json();
-      const summaryData = await summaryRes.json();
-      if (!seriesRes.ok) {
+        const rows = Array.isArray(seriesData.rows) ? seriesData.rows : [];
+        if (!rows.length) {
+          setStrategyResultsVisibility(false);
+          meta.textContent = "No data for the selected legs.";
+          meta.className = "meta danger";
+          renderStrategyStats([]);
+          renderStrategySeriesTable([]);
+          renderStrategyTradeMatrixTable([]);
+          renderStrategyIndexChart([]);
+          trackStrategyRunResult("empty", {
+            reason: "no_series_rows",
+            trade_plan_count: tradePlans.length,
+            skipped_dates: skippedDates,
+          });
+          return;
+        }
+        const transformed = transformStrategySeriesRows(rows, summaryData.market_series || [], tradePlans, { holdTillExpiry, exitDays, exitTime });
+        if (!transformed.length) {
+          setStrategyResultsVisibility(false);
+          meta.textContent = "No completed trades yet for the selected exit criteria.";
+          meta.className = "meta danger";
+          renderStrategyStats([]);
+          renderStrategySeriesTable([]);
+          renderStrategyTradeMatrixTable([]);
+          renderStrategyIndexChart([]);
+          trackStrategyRunResult("empty", {
+            reason: "no_completed_trades",
+            trade_plan_count: tradePlans.length,
+            trade_dates_count: tradeDates.length,
+            series_rows_count: rows.length,
+            skipped_dates: skippedDates,
+          });
+          return;
+        }
+        const completedTradeCount = new Set(transformed.map((row) => row.trade_index).filter((value) => value != null)).size;
+        const completedContracts = new Set(
+          transformed
+            .map((row) => row.streamer_symbol)
+            .filter((value) => value != null && value !== "")
+        ).size;
+        setStrategyResultsVisibility(true);
+        renderStrategyStats(transformed);
+        renderStrategySeriesTable(transformed);
+        renderStrategyIndexChart(transformed);
+        meta.textContent = "";
+        meta.className = "meta";
+        trackStrategyRunResult("success", {
+          trade_dates_count: tradeDates.length,
+          trade_plan_count: tradePlans.length,
+          completed_trade_count: completedTradeCount,
+          completed_contract_count: completedContracts,
+          series_rows_count: rows.length,
+          skipped_dates: skippedDates,
+        });
+      } catch {
         setStrategyResultsVisibility(false);
-        meta.textContent = "Error loading series: " + (seriesData.error || "unknown");
+        meta.textContent = "Request failed while running strategy.";
         meta.className = "meta danger";
         renderStrategyStats([]);
         renderStrategySeriesTable([]);
         renderStrategyIndexChart([]);
-        return;
+        trackStrategyRunResult("error", { reason: "request_failed" });
       }
-      if (!summaryRes.ok) {
-        meta.textContent = "Warning: could not load spot/summary data.";
-        meta.className = "meta danger";
-      }
-
-      const rows = Array.isArray(seriesData.rows) ? seriesData.rows : [];
-      if (!rows.length) {
-        setStrategyResultsVisibility(false);
-        meta.textContent = "No data for the selected legs.";
-        meta.className = "meta danger";
-        renderStrategyStats([]);
-        renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
-        renderStrategyIndexChart([]);
-        return;
-      }
-      const transformed = transformStrategySeriesRows(rows, summaryData.market_series || [], tradePlans, { holdTillExpiry, exitDays, exitTime });
-      if (!transformed.length) {
-        setStrategyResultsVisibility(false);
-        meta.textContent = "No completed trades yet for the selected exit criteria.";
-        meta.className = "meta danger";
-        renderStrategyStats([]);
-        renderStrategySeriesTable([]);
-        renderStrategyTradeMatrixTable([]);
-        renderStrategyIndexChart([]);
-        return;
-      }
-      const completedTradeCount = new Set(transformed.map((row) => row.trade_index).filter((value) => value != null)).size;
-      const completedContracts = new Set(
-        transformed
-          .map((row) => row.streamer_symbol)
-          .filter((value) => value != null && value !== "")
-      ).size;
-      setStrategyResultsVisibility(true);
-      renderStrategyStats(transformed);
-      renderStrategySeriesTable(transformed);
-      renderStrategyIndexChart(transformed);
-      meta.textContent = "";
-      meta.className = "meta";
     }
 
     function initStrategyTab() {
@@ -4178,6 +4500,7 @@ _HTML = """<!doctype html>
       initTabs();
       initStrategyTab();
       initAnalyzerTab();
+      trackPageView();
     }
 
     initPage();

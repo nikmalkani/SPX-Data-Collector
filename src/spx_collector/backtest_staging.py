@@ -1339,6 +1339,8 @@ _HTML = """<!doctype html>
       font-size: 0.9rem;
       font-family: inherit;
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
     }
     select.input {
       appearance: none;
@@ -1572,6 +1574,9 @@ _HTML = """<!doctype html>
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 14px;
     }
+    .controls-card > div {
+      min-width: 0;
+    }
     .analyzer-filter-row {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1729,6 +1734,19 @@ _HTML = """<!doctype html>
       .chart-legend-item {
         padding: 7px 9px;
         font-size: 0.76rem;
+      }
+      .controls-card {
+        gap: 12px;
+      }
+      .controls-card > div {
+        min-width: 0;
+      }
+      .controls-card .input,
+      .controls-card input[type="date"],
+      .controls-card input[type="time"] {
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
       }
       .stat-tile {
         padding: 12px;
@@ -2182,7 +2200,10 @@ _HTML = """<!doctype html>
     function formatStatAmount(value) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return "";
-      return `$${(numeric * 100).toFixed(2)}`;
+      return `$${(numeric * 100).toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
     }
 
     function formatStatPercent(value) {
@@ -3281,6 +3302,7 @@ _HTML = """<!doctype html>
         svg.appendChild(line);
 
         if (g === 0 || g === gridLines) {
+          if (mobileViewport) continue;
           const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
           txt.setAttribute("x", String(m.left - 8));
           txt.setAttribute("y", String(y + 4));
@@ -3304,14 +3326,16 @@ _HTML = """<!doctype html>
         baseline.setAttribute("stroke-dasharray", "4 3");
         svg.appendChild(baseline);
 
-        const baselineLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        baselineLabel.setAttribute("x", String(m.left - 8));
-        baselineLabel.setAttribute("y", String(baselineY + 4));
-        baselineLabel.setAttribute("text-anchor", "end");
-        baselineLabel.setAttribute("font-size", mobileViewport ? "11" : "11");
-        baselineLabel.setAttribute("fill", "#64748b");
-        baselineLabel.textContent = "100%";
-        svg.appendChild(baselineLabel);
+        if (!mobileViewport) {
+          const baselineLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          baselineLabel.setAttribute("x", String(m.left - 8));
+          baselineLabel.setAttribute("y", String(baselineY + 4));
+          baselineLabel.setAttribute("text-anchor", "end");
+          baselineLabel.setAttribute("font-size", mobileViewport ? "11" : "11");
+          baselineLabel.setAttribute("fill", "#64748b");
+          baselineLabel.textContent = "100%";
+          svg.appendChild(baselineLabel);
+        }
       }
 
       const visibleDayBoundaries = [];
@@ -3514,6 +3538,7 @@ _HTML = """<!doctype html>
         tick.setAttribute("stroke-width", "1");
         svg.appendChild(tick);
 
+        if (mobileViewport) continue;
         const ts = sampleTimes[i];
         const hm = formatEtHm(ts);
         const dte = dteForTs(dteRefExpiration, ts);

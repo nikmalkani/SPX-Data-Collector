@@ -1126,12 +1126,16 @@ _HTML = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light only" />
+  <meta name="supported-color-schemes" content="light" />
+  <meta name="theme-color" content="#f8f7f5" />
   <title>SPX Playground</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
+      color-scheme: light;
       --ink: #1c1917;
       --ink-soft: #44403c;
       --bg: #f8f7f5;
@@ -1385,40 +1389,41 @@ _HTML = """<!doctype html>
       background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,242,239,0.92));
       cursor: crosshair;
       border-radius: 16px;
+      touch-action: none;
     }
     .chart-tooltip {
       position: absolute;
-      min-width: 180px;
-      max-width: 240px;
-      padding: 8px 10px;
-      border-radius: 10px;
+      min-width: 120px;
+      max-width: 160px;
+      padding: 12px 14px;
+      border-radius: 16px;
       background: rgba(15, 23, 42, 0.94);
       color: #f8fafc;
       box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
-      font-size: 0.7rem;
-      line-height: 1.35;
+      font-size: 0.88rem;
+      line-height: 1.25;
       pointer-events: none;
       opacity: 0;
       transform: translate(12px, -12px);
       transition: opacity 120ms ease;
       z-index: 2;
       white-space: normal;
+      text-align: center;
     }
     .chart-tooltip.visible {
       opacity: 1;
     }
-    .chart-tooltip-label {
-      color: #cbd5e1;
-      margin-bottom: 2px;
-    }
     .chart-tooltip-debug {
-      color: #e2e8f0;
-      font-size: 0.72rem;
-      margin-top: 4px;
+      color: #f8fafc;
+      font-size: 0.88rem;
+      font-weight: 600;
+      margin-top: 2px;
     }
     .chart-tooltip-value {
       font-weight: 700;
       text-align: center;
+      font-size: 0.88rem;
+      margin-top: 2px;
     }
     .chart-legend {
       display: flex;
@@ -1683,33 +1688,6 @@ _HTML = """<!doctype html>
       from { opacity: 0; transform: translateY(3px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --ink: #f8f7f5;
-        --ink-soft: rgba(248, 247, 245, 0.78);
-        --bg: #171615;
-        --panel: rgba(33, 30, 27, 0.92);
-        --panel-strong: #211e1b;
-        --panel-muted: #2b2622;
-        --line: rgba(255, 255, 255, 0.09);
-        --muted: rgba(248, 247, 245, 0.58);
-        --shadow-card: 0 1px 2px rgba(0,0,0,0.22), 0 18px 40px rgba(0,0,0,0.24);
-        --shadow-float: 0 24px 60px rgba(0,0,0,0.34);
-      }
-      body {
-        background:
-          radial-gradient(80rem 32rem at 0% 0%, rgba(251, 146, 60, 0.12) 0%, transparent 55%),
-          radial-gradient(64rem 28rem at 100% 0%, rgba(120, 113, 108, 0.1) 0%, transparent 50%),
-          var(--bg);
-      }
-      .surface,
-      .tab-nav { background: rgba(33, 30, 27, 0.72); }
-      th { background: rgba(43, 38, 34, 0.96); }
-      .chart-svg,
-      .chart-wrap,
-      .result-wrap,
-      .stat-tile { background: var(--panel-strong); }
-    }
     @media (max-width: 1100px) {
       .grid { grid-template-columns: 1fr; }
       .controls-card { grid-template-columns: 1fr; }
@@ -1743,7 +1721,7 @@ _HTML = """<!doctype html>
         padding: 10px;
       }
       .chart-svg {
-        height: 420px;
+        height: min(62vw, 260px);
       }
       .chart-legend {
         gap: 8px;
@@ -2951,10 +2929,10 @@ _HTML = """<!doctype html>
         ["Avg Win", formatStatAmount(stats.avgWin)],
         ["Avg Loss", formatStatAmount(stats.avgLoss)],
         ["Avg Trade", formatStatAmount(stats.avgTradePnl)],
-        ["Gain/Loss %", formatStatPercent(stats.avgGainLossPct)],
+        ["Avg Trade Return %", formatStatPercent(stats.avgGainLossPct)],
         ["Best Trade", formatStatAmount(stats.bestTradePnl)],
         ["Worst Trade", formatStatAmount(stats.worstTradePnl)],
-        ["Profit Factor", stats.profitFactor != null && Number.isFinite(stats.profitFactor) ? stats.profitFactor.toFixed(2) : "n/a"],
+        ["Profit Factor (Gross)", stats.profitFactor != null && Number.isFinite(stats.profitFactor) ? stats.profitFactor.toFixed(2) : "n/a"],
       ];
 
       items.forEach(([label, value]) => {
@@ -3072,15 +3050,18 @@ _HTML = """<!doctype html>
       const rawDelta = Number(value) - 100;
       const signedDelta = profitBelow100 ? -rawDelta : rawDelta;
       const sign = signedDelta > 0 ? "+" : "";
-      return `${sign}${signedDelta.toFixed(2)}%`;
+      return `${sign}${signedDelta.toFixed(1)}%`;
     }
 
     function formatStrategyTooltipTimestamp(value) {
-      const ts = parseTimestamp(value);
+      const ts = value instanceof Date ? value : parseTimestamp(value);
       if (!ts) return "";
-      const etDate = formatEtDateKey(ts);
-      const hm = formatEtHm(ts);
-      return `${hm} ET on ${etDate}`;
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }).format(ts).replace(" ", "");
     }
 
     function isVisibleStrategyChartTime(ts) {
@@ -3186,20 +3167,13 @@ _HTML = """<!doctype html>
             return value;
           }
 
-          const steps = [];
-          const maxStep = Math.ceil(maxElapsed / stepMs);
-          for (let s = 0; s <= maxStep; s += 1) {
-            const ms = s * stepMs;
-            const val = carryForward(ms);
-            steps.push(val == null ? null : Number(val));
-          }
-
           tradeSeries.push({
             tradeKey,
             entryDate: entry.tsDate,
             entryCost: entry.strategyCost,
             expirationDate: entry.expirationDate,
-            steps,
+            maxElapsed,
+            carryForward,
           });
         });
 
@@ -3208,11 +3182,21 @@ _HTML = """<!doctype html>
         return;
       }
 
-      const maxSteps = tradeSeries.reduce((m, t) => Math.max(m, t.steps.length), 0);
+      const maxSteps = tradeSeries.reduce((m, t) => Math.max(m, Math.ceil(t.maxElapsed / stepMs) + 1), 0);
       if (!maxSteps) {
         meta.textContent = "No aligned samples available for chart.";
         return;
       }
+
+      tradeSeries.forEach((trade) => {
+        const steps = [];
+        for (let s = 0; s < maxSteps; s += 1) {
+          const ms = s * stepMs;
+          const val = trade.carryForward(ms);
+          steps.push(val == null ? null : Number(val));
+        }
+        trade.steps = steps;
+      });
 
       const blended = [];
       for (let i = 0; i < maxSteps; i += 1) {
@@ -3243,23 +3227,25 @@ _HTML = """<!doctype html>
       visibleIndices.forEach((idx, compressedIdx) => {
         compressedIndexByOriginal.set(idx, compressedIdx);
       });
-      const allY = tradeSeries
-        .flatMap((t) => t.steps)
-        .concat(blended)
+      const plottedY = visibleIndices
+        .map((idx) => blended[idx])
         .filter((v) => v != null && Number.isFinite(v));
-      if (!allY.length) {
+      if (!plottedY.length) {
         meta.textContent = "No numeric values available for chart.";
         return;
       }
 
-      const observedMax = Math.max(...allY);
-      const yMin = 0;
-      const yMax = Math.max(101, observedMax * 1.1);
+      const observedMin = Math.min(100, ...plottedY);
+      const observedMax = Math.max(100, ...plottedY);
+      const yRange = Math.max(1, observedMax - observedMin);
+      const yPad = Math.max(2, yRange * 0.12);
+      const yMin = Math.max(0, observedMin - yPad);
+      const yMax = observedMax + yPad;
 
       const width = 1200;
-      const height = mobileViewport ? 440 : 320;
+      const height = mobileViewport ? 260 : 320;
       const m = mobileViewport
-        ? { top: 18, right: 26, bottom: 72, left: 48 }
+        ? { top: 18, right: 22, bottom: 62, left: 46 }
         : { top: 18, right: 56, bottom: 78, left: 56 };
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       const innerW = width - m.left - m.right;
@@ -3427,19 +3413,18 @@ _HTML = """<!doctype html>
         return bestIdx;
       }
 
-      svg.addEventListener("mouseleave", hideTooltip);
-      svg.addEventListener("mousemove", (event) => {
+      function updateTooltipFromPoint(clientX, clientY) {
         const rect = svg.getBoundingClientRect();
         const wrapRect = wrap.getBoundingClientRect();
         if (!rect.width || !rect.height) {
           hideTooltip();
-          return;
+          return false;
         }
 
-        const relX = ((event.clientX - rect.left) / rect.width) * width;
+        const relX = ((clientX - rect.left) / rect.width) * width;
         if (relX < m.left || relX > m.left + innerW) {
           hideTooltip();
-          return;
+          return false;
         }
 
         const targetCompressed = Math.round(((relX - m.left) / innerW) * compressedXMax);
@@ -3448,7 +3433,7 @@ _HTML = """<!doctype html>
         const idx = findNearestBlendedIndex(targetOriginal);
         if (idx < 0) {
           hideTooltip();
-          return;
+          return false;
         }
 
         const ts = sampleTimes[idx];
@@ -3462,16 +3447,18 @@ _HTML = """<!doctype html>
         hoverMarker.setAttribute("cy", String(chartY));
         hoverMarker.setAttribute("opacity", "1");
 
+        const dte = dteForTs(dteRefExpiration, ts);
         tooltip.innerHTML = `
-          <div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>
+          <div class="chart-tooltip-debug">DTE = ${escapeHtml(dte)}</div>
           <div class="chart-tooltip-debug">${escapeHtml(formatStrategyTooltipTimestamp(ts))}</div>
+          <div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>
         `;
         tooltip.classList.add("visible");
 
         const tooltipWidth = tooltip.offsetWidth || 0;
         const tooltipHeight = tooltip.offsetHeight || 0;
-        const cursorLeft = event.clientX - wrapRect.left;
-        const cursorTop = event.clientY - wrapRect.top;
+        const cursorLeft = clientX - wrapRect.left;
+        const cursorTop = clientY - wrapRect.top;
         const spaceRight = wrapRect.width - cursorLeft;
         const placeLeft = spaceRight < tooltipWidth + 28;
         const left = Math.min(wrapRect.width - 12, Math.max(12, cursorLeft));
@@ -3481,7 +3468,36 @@ _HTML = """<!doctype html>
         tooltip.style.transform = placeLeft
           ? "translate(calc(-100% - 12px), -12px)"
           : "translate(12px, -12px)";
-      });
+        return true;
+      }
+
+      function eventClientPoint(event) {
+        if (event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+          return { x: event.clientX, y: event.clientY };
+        }
+        const touch = event?.touches?.[0] || event?.changedTouches?.[0];
+        if (touch && Number.isFinite(touch.clientX) && Number.isFinite(touch.clientY)) {
+          return { x: touch.clientX, y: touch.clientY };
+        }
+        return null;
+      }
+
+      function handlePointerMove(event) {
+        const point = eventClientPoint(event);
+        if (!point) {
+          hideTooltip();
+          return;
+        }
+        if (event.type.startsWith("touch")) event.preventDefault();
+        updateTooltipFromPoint(point.x, point.y);
+      }
+
+      svg.addEventListener("mouseleave", hideTooltip);
+      svg.addEventListener("mousemove", handlePointerMove);
+      svg.addEventListener("touchstart", handlePointerMove, { passive: false });
+      svg.addEventListener("touchmove", handlePointerMove, { passive: false });
+      svg.addEventListener("touchend", hideTooltip);
+      svg.addEventListener("touchcancel", hideTooltip);
 
       const tickTarget = mobileViewport ? 3 : 8;
       const tickEvery = Math.max(1, Math.ceil(visibleIndices.length / tickTarget));

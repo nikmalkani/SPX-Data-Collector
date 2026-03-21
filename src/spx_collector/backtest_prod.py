@@ -1577,6 +1577,7 @@ _HTML = """<!doctype html>
     }
     .controls-card > div {
       min-width: 0;
+      overflow: hidden;
     }
     .analyzer-filter-row {
       display: grid;
@@ -1741,6 +1742,7 @@ _HTML = """<!doctype html>
       }
       .controls-card > div {
         min-width: 0;
+        overflow: hidden;
       }
       .controls-card .input,
       .controls-card input[type="date"],
@@ -1754,6 +1756,7 @@ _HTML = """<!doctype html>
         .controls-card input[type="time"] {
           width: calc(100% - 2px);
           max-width: calc(100% - 2px);
+          box-sizing: border-box;
           overflow: hidden;
         }
         .controls-card input[type="date"]::-webkit-date-and-time-value,
@@ -1763,7 +1766,9 @@ _HTML = """<!doctype html>
         .controls-card input[type="date"]::-webkit-datetime-edit,
         .controls-card input[type="time"]::-webkit-datetime-edit {
           display: block;
+          max-width: 100%;
           padding: 0;
+          overflow: hidden;
         }
       }
       .stat-tile {
@@ -1931,7 +1936,7 @@ _HTML = """<!doctype html>
             </div>
           </div>
           <div id="strategyBuilderMeta" class="meta" style="margin-top:4px;">Resolve a leg to add it to the strategy.</div>
-          <div id="strategyLegsWrap" class="result-wrap" style="margin-top:12px;">
+          <div id="strategyLegsWrap" class="result-wrap is-hidden" style="margin-top:12px;">
             <table id="strategyLegsTable">
               <thead>
                 <tr>
@@ -2410,7 +2415,11 @@ _HTML = """<!doctype html>
 
     function renderStrategyLegsTable() {
       const body = document.querySelector("#strategyLegsTable tbody");
+      const wrap = document.getElementById("strategyLegsWrap");
       body.innerHTML = "";
+      if (wrap) {
+        wrap.classList.toggle("is-hidden", !strategyState.legs.length);
+      }
       strategyState.legs.forEach((leg) => {
         const buyActive = leg.side === "BUY" ? "active" : "";
         const sellActive = leg.side === "SELL" ? "active" : "";

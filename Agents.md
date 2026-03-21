@@ -37,6 +37,23 @@
 5. Restart backend process after each `_HTML` edit before re-testing.
 6. Ignore `favicon.ico 404`; it is unrelated.
 
+## Security Hardening Learnings
+- Common beginner mistakes for a public analytics site (and the concrete fix for this repo):
+  - Expose raw SQL endpoints or script evaluation hooks (`/api/query`).
+    - Fix: remove the route entirely and keep only curated read endpoints.
+  - Leak internals in health/diagnostic responses (DB paths, internal flags, secret-bearing state).
+    - Fix: return only the minimum success marker (`{"ok": true}`) and keep internals on backend.
+  - Trust the public environment and file permissions of `.env`.
+    - Fix: enforce strict owner-only file mode at startup and fail fast when too-broad permissions are found.
+  - Leave insecure tabs/features visible in production that suggest direct data access.
+    - Fix: disable UI actions that imply query execution and return safe disabled messaging.
+  - Let static documentation claim removed/unsupported paths.
+    - Fix: keep architecture docs in sync so public/developer guidance does not advertise retired attack surfaces.
+- Query endpoint shutdown is now mandatory before public rollout: remove `/api/query` from handler routing and delete its SQL helper paths to reduce raw SQL attack surface.
+- Avoid exposing internal server paths in health responses. `GET /api/health` should return only health status by default (no DB path or internal flags).
+- Enforce strict `.env` permissions before loading settings. Insecure `.env` permissions are a local secret-leak vector even before code-level validation.
+- Keep token-bearing files out of web root and logs; validate file modes at startup and fail fast when permissions are too broad.
+
 ## Lightsail Access Shortcuts
 - If the user says anything like:
   - "log me into my server"
@@ -67,3 +84,16 @@ Use `--port` to override when needed, but keep this mapping as the standard to a
 - Keep `AGENTS.md` focused on durable rules and workflow. Put longer topic notes in clearly named docs and reference them here.
 - Time zone guidance and DST pitfalls: `docs/TIMEZONE_NOTES.md`
 - Architecture overview: `docs/architecture.md`
+
+## Deployment Workflow
+- Treat the local repo as the source of truth and Lightsail as a deploy target only.
+- Do not edit app code directly on the Lightsail server except during emergency debugging.
+- Do not push app changes directly to `main` during normal work.
+- Standard flow:
+  1. Create a local feature branch from updated `main`.
+  2. Make and test changes locally in `backtest_dev.py` and/or `backtest_staging.py`.
+  3. Copy approved changes into `backtest_prod.py` only when ready for production.
+  4. Commit the branch, push it to GitHub, open a PR, and merge into `main`.
+  5. On Lightsail, `git checkout main && git pull --ff-only origin main`, then restart services.
+- Keep the server repo on `main` after deployment.
+- Emergency direct pushes to `main` are allowed only when explicitly intended, and should be treated as exceptions.

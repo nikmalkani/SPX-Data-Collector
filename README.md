@@ -1,8 +1,12 @@
 # SPX Data Collector
 
-Collects index data from tastytrade and stores snapshots in SQLite/Postgres.
+This repo has three working parts:
 
-Current behavior per run:
+- the collector that pulls SPX data from tastytrade and stores snapshots
+- local backtest/playground HTTP apps for dev and staging work
+- the prod backtest app that is served publicly at `marketplayground.io`
+
+Current collector behavior per run:
 - Inserts one market snapshot row for `SPX` into `spx_market_snapshots`.
 - Inserts SPX option contract snapshot rows into `spx_option_snapshots`.
 
@@ -57,6 +61,31 @@ Common runtime settings:
 - `OPTIONS_STREAM_TIMEOUT_SECONDS` (default `20`)
 - `COLLECTOR_LOG_LEVEL` (default `INFO`)
 
+## App Roles
+
+- `src/spx_collector/backtest_dev.py`: local dev UI, default port `8787`
+- `src/spx_collector/backtest_staging.py`: local staging UI, default port `8788`
+- `src/spx_collector/backtest_prod.py`: prod UI, default port `8789`
+
+All three backtest apps read through Python HTTP handlers. The browser does not connect to SQLite directly.
+
+## Website Deployment Shape
+
+The public website runs with this request path:
+
+`Browser -> Caddy -> backtest_prod.py on 127.0.0.1:8789 -> SQLite`
+
+Current prod hosting layout in this repo:
+
+- Caddy reverse proxies `marketplayground.io` to the prod app
+- `deploy/systemd/spx-backtest-prod.service` runs the public UI on loopback
+- the prod UI and collector share the same local SQLite file on the Lightsail instance
+
+Contributor-level deployment notes live here:
+
+- `docs/lightsail_prod_setup.md`
+- `docs/architecture.md`
+
 ## Run Commands
 
 One scheduled-window run:
@@ -75,6 +104,14 @@ Spot-only auth/diagnostics:
 
 ```bash
 spx-collector diagnose-spot
+```
+
+Local backtest apps:
+
+```bash
+PYTHONPATH=src python -m spx_collector.backtest_dev
+PYTHONPATH=src python -m spx_collector.backtest_staging
+PYTHONPATH=src python -m spx_collector.backtest_prod
 ```
 
 ## Forced Snapshot Test (Off-Hours)
@@ -126,15 +163,26 @@ sqlite3 -header -csv spx_options.db "SELECT * FROM spx_option_snapshots ORDER BY
 
 ## Deploy Update (Lightsail)
 
+Treat the local repo as the source of truth and Lightsail as a deploy target. Normal flow is:
+
+1. Make and test changes locally.
+2. Merge reviewed changes into `main`.
+3. On Lightsail, fast-forward `main` and restart services.
+
+Typical update commands:
+
 ```bash
 cd ~/SPX-Data-Collector
 git checkout main
-git pull origin main
+git pull --ff-only origin main
 source .venv/bin/activate
 pip install -e .
 sudo systemctl restart spx-collector
+journalctl -u spx-backtest-prod -n 80 --no-pager
 journalctl -u spx-collector -n 80 --no-pager
 ```
+
+For full website setup and service wiring, use `docs/lightsail_prod_setup.md`.
 
 ## Notes
 

@@ -1338,6 +1338,7 @@ _HTML = """<!doctype html>
       color: var(--ink);
       font-size: 0.9rem;
       font-family: inherit;
+      display: block;
       width: 100%;
       min-width: 0;
       max-width: 100%;
@@ -1747,6 +1748,23 @@ _HTML = """<!doctype html>
         width: 100%;
         min-width: 0;
         max-width: 100%;
+      }
+      @supports (-webkit-touch-callout: none) {
+        .controls-card input[type="date"],
+        .controls-card input[type="time"] {
+          width: calc(100% - 2px);
+          max-width: calc(100% - 2px);
+          overflow: hidden;
+        }
+        .controls-card input[type="date"]::-webkit-date-and-time-value,
+        .controls-card input[type="time"]::-webkit-date-and-time-value {
+          text-align: left;
+        }
+        .controls-card input[type="date"]::-webkit-datetime-edit,
+        .controls-card input[type="time"]::-webkit-datetime-edit {
+          display: block;
+          padding: 0;
+        }
       }
       .stat-tile {
         padding: 12px;

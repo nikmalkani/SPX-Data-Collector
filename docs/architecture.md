@@ -57,7 +57,8 @@ flowchart LR
 
 - `src/spx_collector/backtest_dev.py` is the local dev playground.
 - `src/spx_collector/backtest_staging.py` is the local staging playground.
-- Both apps serve HTML plus `/api/options/*` and `/api/query` routes from Python.
+- `backtest_dev.py` also serves `/api/query` for SQL Lab and keeps `/api/schema`/`/api/health` for diagnostics.
+- `backtest_staging.py` and `backtest_prod.py` intentionally omit raw SQL execution, keeping only curated endpoints and tracking/health surfaces.
 - The browser talks to Python handlers first, then those handlers query the database.
 
 ### 3. Public website path

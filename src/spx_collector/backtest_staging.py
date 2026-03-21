@@ -33,38 +33,17 @@ def _resolve_sqlite_path(db_url: str) -> Path:
     return Path(raw_path).expanduser().resolve()
 
 
-def _safe_query(query: str) -> str:
-    q = query.strip()
-    if not q:
-        raise ValueError("Query is empty.")
-
-    lowered = q.lower()
-    if ";" in q[:-1]:
-        raise ValueError("Only a single SQL statement is allowed.")
-
-    if not (
-        lowered.startswith("select")
-        or lowered.startswith("pragma")
-        or lowered.startswith("with")
-    ):
-        raise ValueError("Only SELECT/CTE/PRAGMA queries are allowed.")
-
-    blocked = [
-        "insert ",
-        "update ",
-        "delete ",
-        "drop ",
-        "alter ",
-        "create ",
-        "attach ",
-        "detach ",
-        "replace ",
-        "truncate ",
-    ]
-    if any(tok in lowered for tok in blocked):
-        raise ValueError("Mutating SQL is blocked in this UI.")
-
-    return q
+def _assert_env_file_permissions(env_file: str = ".env") -> None:
+    env_path = Path(env_file).expanduser()
+    if not env_path.exists():
+        return
+    if not env_path.is_file():
+        raise PermissionError(f"{env_path} exists but is not a regular file.")
+    if env_path.stat().st_mode & 0o077:
+        raise PermissionError(
+            f"Insecure permissions on {env_path}: expected 600, got "
+            f"{oct(env_path.stat().st_mode & 0o777)}"
+        )
 
 
 def _json_response(
@@ -111,15 +90,6 @@ def _schema_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             for r in rows
         ]
     return {"tables": table_names, "schema": schema}
-
-
-def _run_query(conn: sqlite3.Connection, query: str) -> dict[str, Any]:
-    safe = _safe_query(query)
-    cur = conn.execute(safe)
-    col_names = [c[0] for c in (cur.description or [])]
-    rows = cur.fetchall()
-    values = [[row[i] for i in range(len(col_names))] for row in rows]
-    return {"columns": col_names, "rows": values, "row_count": len(values)}
 
 
 def _parse_datetime(value: str | None, label: str) -> datetime | None:
@@ -874,16 +844,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             _html_response(self, METRICS_HTML)
             return
         if path == "/api/health":
-            _json_response(
-                self,
-                {
-                    "ok": True,
-                    "db_path": str(self.db_path),
-                    "tracking_enabled": self.tracking_enabled,
-                    "tracking_metrics_enabled": self.tracking_metrics_enabled,
-                    "tracking_db_path": str(self.tracking_db_path) if self.tracking_db_path else None,
-                },
-            )
+            _json_response(self, {"ok": True})
             return
         if path == "/api/ops/metrics/overview":
             if not self.tracking_metrics_enabled or self.tracking_db_path is None:
@@ -1081,7 +1042,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path, _ = _get_query_params(self.path)
-        if path not in {"/api/query", "/api/options/strategy-history", "/api/track"}:
+        if path not in {"/api/options/strategy-history", "/api/track"}:
             _json_response(self, {"error": "not_found"}, status=404)
             return
 
@@ -1098,13 +1059,6 @@ class SqlUiHandler(BaseHTTPRequestHandler):
                     return
                 payload = insert_tracking_event(self.tracking_db_path, parsed)
                 _json_response(self, payload, status=202)
-                return
-
-            if path == "/api/query":
-                query = str(parsed.get("query", ""))
-                with sqlite3.connect(self.db_path) as conn:
-                    payload = _run_query(conn, query)
-                _json_response(self, payload)
                 return
 
             payload_legs_raw = parsed.get("legs")
@@ -1147,6 +1101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    _assert_env_file_permissions()
     settings = Settings()
     db_path = _resolve_sqlite_path(settings.db_url)
     if not db_path.exists():

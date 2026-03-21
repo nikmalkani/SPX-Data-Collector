@@ -825,9 +825,6 @@ class SqlUiHandler(BaseHTTPRequestHandler):
         if path == "/":
             _html_response(self, _HTML)
             return
-        if path == "/variant1":
-            _html_response(self, _variant1_html())
-            return
         if path == "/api/health":
             _json_response(self, {"ok": True, "db_path": str(self.db_path)})
             return
@@ -1067,11 +1064,12 @@ _HTML = """<!doctype html>
       margin-bottom: 0;
     }
     h1 {
-      font-size: clamp(2.15rem, 3.2vw, 3.45rem);
-      line-height: 0.95;
+      font-size: clamp(2.1rem, 3vw, 3.35rem);
+      line-height: 1.02;
       letter-spacing: -0.035em;
-      word-spacing: 0.12em;
-      max-width: 10.5ch;
+      word-spacing: 0.04em;
+      max-width: none;
+      white-space: nowrap;
     }
     h2 { font-size: 1.15rem; letter-spacing: -0.02em; }
     .app-shell { position: relative; z-index: 1; }
@@ -1100,15 +1098,15 @@ _HTML = """<!doctype html>
       gap: 10px;
     }
     .brand-mark {
-      width: 52px;
-      height: 52px;
-      border-radius: 16px;
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       color: #fff7ed;
-      font-size: 1.1rem;
+      font-size: 0.92rem;
       font-family: inherit;
       letter-spacing: -0.04em;
       font-weight: 700;
@@ -1126,22 +1124,22 @@ _HTML = """<!doctype html>
       color: rgba(255, 237, 213, 0.82);
     }
     .brand-title {
-      font-size: 2.35rem;
+      font-size: 1.7rem;
       line-height: 1;
       letter-spacing: -0.04em;
       font-weight: 700;
       color: #fafaf9;
     }
     .hero-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 0.95fr) minmax(16rem, 21rem);
-      gap: 18px;
-      align-items: center;
+      display: block;
     }
     .hero-copy {
       display: flex;
       flex-direction: column;
       gap: 8px;
+      max-width: none;
+      align-items: center;
+      text-align: center;
     }
     .sub {
       margin-top: 0;
@@ -1155,44 +1153,6 @@ _HTML = """<!doctype html>
       color: rgba(245, 245, 244, 0.62);
       max-width: 48ch;
       line-height: 1.6;
-    }
-    .hero-panel {
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 20px;
-      padding: 14px;
-      background: rgba(255, 255, 255, 0.06);
-      backdrop-filter: blur(12px);
-    }
-    .hero-panel-title {
-      font-size: 0.78rem;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: rgba(255, 237, 213, 0.8);
-      margin-bottom: 10px;
-    }
-    .hero-list {
-      display: grid;
-      gap: 8px;
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-    .hero-list li {
-      display: grid;
-      gap: 4px;
-      padding: 10px 12px;
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-    .hero-list strong {
-      font-size: 0.88rem;
-      color: #fafaf9;
-    }
-    .hero-list span {
-      font-size: 0.78rem;
-      color: rgba(245, 245, 244, 0.62);
-      line-height: 1.4;
     }
     .surface {
       margin-top: 22px;
@@ -1629,7 +1589,6 @@ _HTML = """<!doctype html>
       .stat-tile { background: var(--panel-strong); }
     }
     @media (max-width: 1100px) {
-      .hero-grid { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .controls-card { grid-template-columns: 1fr; }
       .controls-card .full { grid-column: auto; }
@@ -1644,11 +1603,15 @@ _HTML = """<!doctype html>
       .surface { padding: 14px; border-radius: 24px; }
       .card { padding: 16px; border-radius: 20px; }
       .brand-mark {
-        width: 44px;
-        height: 44px;
-        font-size: 0.95rem;
+        width: 36px;
+        height: 36px;
+        font-size: 0.82rem;
       }
-      .brand-title { font-size: 1.65rem; }
+      .brand-title { font-size: 1.35rem; }
+      h1 {
+        white-space: normal;
+        max-width: 10ch;
+      }
       .stats-grid { grid-template-columns: 1fr; }
     }
   </style>
@@ -1668,27 +1631,6 @@ _HTML = """<!doctype html>
         <div class="hero-copy">
           <h1>Explore, interact, and discover</h1>
         </div>
-        <aside class="hero-panel">
-          <div class="hero-panel-title">Included Playgrounds</div>
-          <ul class="hero-list">
-            <li>
-              <strong>Options Replay</strong>
-              <span>Define entry and exit criteria of multi-leg strategies and plot returns</span>
-            </li>
-            <li>
-              <strong>Volatility Smile</strong>
-              <span>Coming Soon</span>
-            </li>
-            <li>
-              <strong>Reddit Quizzes</strong>
-              <span>Coming Soon</span>
-            </li>
-            <li>
-              <strong>Clout Races</strong>
-              <span>Coming Soon</span>
-            </li>
-          </ul>
-        </aside>
       </div>
     </section>
     <div class="surface">
@@ -4142,10 +4084,6 @@ _HTML = """<!doctype html>
 </body>
 </html>
 """
-
-
-def _variant1_html() -> str:
-    return _HTML
 
 
 if __name__ == "__main__":

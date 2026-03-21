@@ -13,7 +13,7 @@
 - The syntax error prevented tab init/bind code from running at all.
 
 ### Why it happened
-- The UI is embedded in Python as a triple-quoted string (`_HTML` in `backtest_ui.py`).
+- The UI is embedded in Python as a triple-quoted string (`_HTML` in the backtest entry files like `backtest_dev.py`, `backtest_staging.py`, and `backtest_prod.py`).
 - JS escape sequences like `"\n"` inside that Python string can become literal newlines in served JS if not escaped correctly for this embedding context.
 - Some modern JS constructs can also cause compatibility/parser issues depending on browser/runtime.
 
@@ -26,11 +26,12 @@
 
 ### Operational gotcha
 - Hard refresh is not enough after editing `_HTML` in Python.
-- You must restart the running `backtest_ui.py`/`spx-backtest-ui` process to serve updated HTML/JS.
+- You must restart the running backtest process after editing `_HTML` so the updated page is served.
+- In this repo that usually means restarting whichever script you launched: `backtest_dev.py`, `backtest_staging.py`, or `backtest_prod.py`.
 
 ### Quick troubleshooting checklist
 1. Open browser console and check first syntax error line in `(index)`.
-2. Map that line to `_HTML` line numbers in `src/spx_collector/backtest_ui.py`.
+2. Map that line to `_HTML` line numbers in the active backtest file under `src/spx_collector/`, usually `backtest_dev.py`, `backtest_staging.py`, or `backtest_prod.py`.
 3. Check for Python-string escape interactions in inline JS (`\n`, `\t`, etc.).
 4. If parse error exists, assume tab code never initialized; fix parse error first.
 5. Restart backend process after each `_HTML` edit before re-testing.
@@ -65,3 +66,4 @@ Use `--port` to override when needed, but keep this mapping as the standard to a
 - Do not hardcode time zone offsets for civil/business time. Use UTC for storage and named IANA zones for conversion.
 - Keep `AGENTS.md` focused on durable rules and workflow. Put longer topic notes in clearly named docs and reference them here.
 - Time zone guidance and DST pitfalls: `docs/TIMEZONE_NOTES.md`
+- Architecture overview: `docs/architecture.md`

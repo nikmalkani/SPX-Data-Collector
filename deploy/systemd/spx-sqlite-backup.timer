@@ -1,0 +1,10 @@
+[Unit]
+Description=Run SPX SQLite backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+Unit=spx-sqlite-backup.service
+
+[Install]
+WantedBy=timers.target

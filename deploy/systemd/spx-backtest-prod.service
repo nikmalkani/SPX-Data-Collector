@@ -1,0 +1,16 @@
+[Unit]
+Description=SPX Backtest Prod UI
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/SPX-Data-Collector
+EnvironmentFile=/home/ubuntu/SPX-Data-Collector/.env
+ExecStart=/home/ubuntu/SPX-Data-Collector/.venv/bin/python -m spx_collector.backtest_prod --host 127.0.0.1 --port 8789
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

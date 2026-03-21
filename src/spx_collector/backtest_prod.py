@@ -236,7 +236,7 @@ def _run_resolve_leg_payload(
     target_side: str | None = None,
     snapshot_from: datetime | None = None,
     snapshot_to: datetime | None = None,
-    window_minutes: int = 30,
+    window_minutes: int = 5,
     strict_dte: bool = False,
 ) -> dict[str, Any]:
     opt_type = option_type.upper()
@@ -329,10 +329,10 @@ def _run_resolve_leg_payload(
     if not rows:
         if strict_dte:
             raise ValueError(
-                f"No exact DTE={dte} contract found for this leg in the requested entry window."
+                f"No exact DTE={dte} contract found for this leg within {window_minutes} minutes of the requested entry time."
             )
         raise ValueError(
-            "No matching contract for this leg in the requested entry window."
+            f"No matching contract for this leg within {window_minutes} minutes of the requested entry time."
         )
 
     contracts: list[dict[str, Any]] = []
@@ -618,7 +618,7 @@ def _run_strategy_history_payload(
     legs: list[dict[str, Any]],
     start_date: date | None,
     end_date: date | None,
-    window_minutes: int = 30,
+    window_minutes: int = 5,
 ) -> dict[str, Any]:
     if not legs:
         raise ValueError("At least one strategy leg is required.")
@@ -826,12 +826,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             _html_response(self, _HTML)
             return
         if path == "/api/health":
-            _json_response(self, {"ok": True, "db_path": str(self.db_path)})
-            return
-        if path == "/api/schema":
-            with sqlite3.connect(self.db_path) as conn:
-                payload = _schema_payload(conn)
-            _json_response(self, payload)
+            _json_response(self, {"ok": True})
             return
         if path == "/api/options/contracts":
             try:
@@ -921,7 +916,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
                 target_side = _get_qs(qs, "target_side")
                 snapshot_from = _parse_datetime(_get_qs(qs, "snapshot_from"), "snapshot_from")
                 snapshot_to = _parse_datetime(_get_qs(qs, "snapshot_to"), "snapshot_to")
-                window_minutes = _parse_int(_get_qs(qs, "window_minutes"), "window_minutes", 30)
+                window_minutes = _parse_int(_get_qs(qs, "window_minutes"), "window_minutes", 5)
                 strict_dte_raw = (_get_qs(qs, "strict_dte") or "").strip().lower()
                 strict_dte = strict_dte_raw in {"1", "true", "yes", "on"}
                 with sqlite3.connect(self.db_path) as conn:
@@ -948,7 +943,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
         _json_response(self, {"error": "not_found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/query", "/api/options/strategy-history"}:
+        if self.path != "/api/options/strategy-history":
             _json_response(self, {"error": "not_found"}, status=404)
             return
 
@@ -956,13 +951,6 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             raw_len = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(raw_len).decode("utf-8")
             parsed = json.loads(body)
-
-            if self.path == "/api/query":
-                query = str(parsed.get("query", ""))
-                with sqlite3.connect(self.db_path) as conn:
-                    payload = _run_query(conn, query)
-                _json_response(self, payload)
-                return
 
             payload_legs_raw = parsed.get("legs")
             if not isinstance(payload_legs_raw, list):
@@ -972,7 +960,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             start = _parse_date(parsed.get("from"), "from")
             end = _parse_date(parsed.get("to"), "to")
             symbol = str(parsed.get("symbol", "SPX"))
-            window_minutes = _parse_int(parsed.get("window_minutes"), "window_minutes", 30)
+            window_minutes = _parse_int(parsed.get("window_minutes"), "window_minutes", 5)
 
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -995,7 +983,7 @@ class SqlUiHandler(BaseHTTPRequestHandler):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="spx-backtest-ui",
-        description="Run local SQL UI against collector database.",
+        description="Run the public SPX backtest UI against the collector database.",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8789)
@@ -1011,7 +999,7 @@ def main() -> None:
 
     SqlUiHandler.db_path = db_path
     server = ThreadingHTTPServer((args.host, args.port), SqlUiHandler)
-    print(f"SQL UI running at http://{args.host}:{args.port} using {db_path}")
+    print(f"Backtest prod UI running at http://{args.host}:{args.port} using {db_path}")
     server.serve_forever()
 
 
@@ -1023,43 +1011,150 @@ _HTML = """<!doctype html>
   <title>SPX Playground</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --ink: #0f172a;
-      --bg: #f7f8fa;
-      --panel: #ffffff;
-      --line: #e2e8f0;
-      --accent: #0d9488;
-      --accent2: #0ea5e9;
-      --muted: #64748b;
+      --ink: #1c1917;
+      --ink-soft: #44403c;
+      --bg: #f8f7f5;
+      --panel: rgba(255, 255, 255, 0.92);
+      --panel-strong: #ffffff;
+      --panel-muted: #f4f2ef;
+      --line: rgba(28, 25, 23, 0.1);
+      --accent: rgba(255, 71, 43, 1);
+      --accent-strong: rgba(217, 54, 29, 1);
+      --accent-soft: rgba(255, 227, 221, 1);
+      --muted: #6b625a;
+      --success: #166534;
+      --danger: #b91c1c;
+      --shadow-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 18px 40px rgba(28, 25, 23, 0.06);
+      --shadow-float: 0 24px 60px rgba(28, 25, 23, 0.12);
     }
 
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Space Grotesk", sans-serif;
+      font-family: "Plus Jakarta Sans", sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(1200px 420px at 0% 0%, #d1fae5 0%, transparent 50%),
-        radial-gradient(900px 360px at 100% 0%, #e0f2fe 0%, transparent 45%),
+        radial-gradient(80rem 32rem at 0% 0%, rgba(251, 146, 60, 0.18) 0%, transparent 55%),
+        radial-gradient(64rem 28rem at 100% 0%, rgba(120, 113, 108, 0.14) 0%, transparent 50%),
         var(--bg);
+      min-height: 100vh;
     }
     .wrap {
-      max-width: 1400px;
+      max-width: 1440px;
       margin: 0 auto;
-      padding: 22px;
+      padding: 24px;
     }
     h1, h2, h3 {
       margin-top: 0;
+      margin-bottom: 0;
     }
-    h1 { font-size: 2rem; letter-spacing: -0.02em; }
-    .sub { color: var(--muted); margin-top: 6px; }
+    h1 {
+      font-size: clamp(2.1rem, 3vw, 3.35rem);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+      word-spacing: 0.04em;
+      max-width: none;
+      white-space: nowrap;
+    }
+    h2 { font-size: 1.15rem; letter-spacing: -0.02em; }
+    .app-shell { position: relative; z-index: 1; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 14px 22px 16px;
+      background:
+        linear-gradient(135deg, rgba(28, 25, 23, 0.96), rgba(68, 64, 60, 0.88)),
+        radial-gradient(32rem 18rem at 100% 0%, rgba(251, 146, 60, 0.22), transparent 60%);
+      color: #fafaf9;
+      box-shadow: var(--shadow-float);
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff7ed;
+      font-size: 0.92rem;
+      font-family: inherit;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      box-shadow: 0 12px 24px rgba(234, 88, 12, 0.24);
+    }
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .eyebrow {
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255, 237, 213, 0.82);
+    }
+    .brand-title {
+      font-size: 1.7rem;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      font-weight: 700;
+      color: #fafaf9;
+    }
+    .hero-grid {
+      display: block;
+    }
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: none;
+      align-items: center;
+      text-align: center;
+    }
+    .sub {
+      margin-top: 0;
+      max-width: 54ch;
+      color: rgba(245, 245, 244, 0.72);
+      line-height: 1.7;
+      font-size: 1rem;
+    }
+    .hero-note {
+      font-size: 0.88rem;
+      color: rgba(245, 245, 244, 0.62);
+      max-width: 48ch;
+      line-height: 1.6;
+    }
+    .surface {
+      margin-top: 22px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      background: rgba(255, 255, 255, 0.56);
+      backdrop-filter: blur(12px);
+    }
     .grid {
       display: grid;
       grid-template-columns: 1.4fr 1fr;
-      gap: 14px;
-      margin-top: 16px;
+      gap: 18px;
+      margin-top: 18px;
     }
     .grid.full {
       grid-template-columns: 1fr;
@@ -1067,124 +1162,229 @@ _HTML = """<!doctype html>
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 14px;
-      box-shadow: 0 6px 20px rgba(15,23,42,0.04);
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: var(--shadow-card);
       overflow: hidden;
+      backdrop-filter: blur(10px);
     }
     textarea {
       width: 100%;
       min-height: 150px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px;
+      border-radius: 16px;
+      padding: 14px 16px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.92rem;
       resize: vertical;
+      background: var(--panel-strong);
+      color: var(--ink);
     }
     .row {
       display: flex;
-      gap: 10px;
-      margin-top: 10px;
+      gap: 12px;
+      margin-top: 12px;
       flex-wrap: wrap;
       align-items: center;
     }
     button, select {
       border: 0;
-      border-radius: 10px;
-      padding: 9px 14px;
-      font-weight: 700;
+      border-radius: 16px;
+      padding: 11px 16px;
+      font-weight: 600;
       color: #fff;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       cursor: pointer;
       font-family: inherit;
+      transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease, background 160ms ease;
+      box-shadow: 0 10px 24px rgba(234, 88, 12, 0.2);
     }
-    .secondary {
-      background: #334155;
+    button:hover, select:hover { transform: translateY(-1px); }
+    button:focus-visible, select:focus-visible, .input:focus-visible, textarea:focus-visible {
+      outline: 2px solid rgba(251, 146, 60, 0.45);
+      outline-offset: 2px;
     }
+    .secondary { background: linear-gradient(135deg, #57534e, #292524); box-shadow: 0 10px 24px rgba(41, 37, 36, 0.16); }
     .input {
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 8px 10px;
-      background: #fff;
+      border-radius: 16px;
+      padding: 11px 14px;
+      background: var(--panel-strong);
       color: var(--ink);
       font-size: 0.9rem;
       font-family: inherit;
+      width: 100%;
     }
-    label { font-size: 0.9rem; color: #1e293b; }
+    select.input {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      padding-right: 44px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.25 5.5L7 9.25L10.75 5.5' stroke='%236b625a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+      background-size: 14px 14px;
+    }
+    label {
+      display: inline-block;
+      margin-bottom: 8px;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
     .meta {
       color: var(--muted);
-      font-size: 0.9rem;
+      font-size: 0.92rem;
+      line-height: 1.6;
     }
     .result-wrap {
       margin-top: 14px;
       max-height: 520px;
       overflow: auto;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.94);
       padding-bottom: 10px;
       scrollbar-gutter: stable both-edges;
     }
     .chart-wrap {
       margin-top: 12px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.94);
       overflow: hidden;
-      padding: 10px;
+      position: relative;
+      padding: 14px;
     }
     .chart-svg {
       width: 100%;
       height: 320px;
       display: block;
-      background: #ffffff;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,242,239,0.92));
+      cursor: crosshair;
+      border-radius: 16px;
+    }
+    .chart-tooltip {
+      position: absolute;
+      min-width: 126px;
+      max-width: 187px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.94);
+      color: #f8fafc;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+      font-size: 0.7rem;
+      line-height: 1.35;
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(12px, -12px);
+      transition: opacity 120ms ease;
+      z-index: 2;
+      white-space: nowrap;
+    }
+    .chart-tooltip.visible {
+      opacity: 1;
+    }
+    .chart-tooltip-label {
+      color: #cbd5e1;
+      margin-bottom: 2px;
+    }
+    .chart-tooltip-value {
+      font-weight: 700;
+      text-align: center;
     }
     .chart-legend {
       display: flex;
-      gap: 14px;
+      gap: 12px;
       flex-wrap: wrap;
-      margin-top: 8px;
-      font-size: 0.85rem;
-      color: #334155;
+      margin-top: 14px;
+      font-size: 0.82rem;
+      color: var(--ink-soft);
     }
     .chart-legend-item {
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: var(--panel-muted);
+    }
+    .chart-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .chart-toggle-group {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: flex-end;
+      margin-left: auto;
+      font-size: 0.82rem;
+      color: var(--ink-soft);
+      padding: 6px;
+      border-radius: 999px;
+      background: var(--panel-muted);
+    }
+    .chart-toggle-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+    .chart-toggle-option input {
+      margin: 0;
     }
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 10px;
-      margin-top: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
     }
     .stat-tile {
       border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-      padding: 12px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,242,239,0.92));
+      padding: 16px;
     }
     .stat-label {
-      font-size: 0.78rem;
+      font-size: 0.72rem;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.12em;
       color: var(--muted);
     }
     .stat-value {
-      margin-top: 6px;
-      font-size: 1.35rem;
-      font-weight: 700;
+      margin-top: 10px;
+      font-size: 1.5rem;
+      font-weight: 600;
       color: var(--ink);
+    }
+    .meta-emphasis {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--panel-muted);
+      color: var(--ink-soft);
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      vertical-align: middle;
     }
     .section-heading {
       grid-column: 1 / -1;
-      margin: 8px 0 0;
-      font-size: 0.8rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
+      margin: 10px 0 0;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--muted);
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
     }
     .field-disabled {
       opacity: 0.45;
@@ -1198,7 +1398,7 @@ _HTML = """<!doctype html>
     .checkbox-row input[type="checkbox"] {
       width: 16px;
       height: 16px;
-      accent-color: #0d9488;
+      accent-color: var(--accent);
     }
     .chart-legend-swatch {
       width: 14px;
@@ -1213,19 +1413,23 @@ _HTML = """<!doctype html>
     }
     th, td {
       border-bottom: 1px solid var(--line);
-      padding: 8px 10px;
+      padding: 11px 12px;
       text-align: left;
       white-space: nowrap;
     }
     th {
       position: sticky;
       top: 0;
-      background: #f8fafc;
+      background: rgba(244, 242, 239, 0.96);
       z-index: 1;
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
     }
     .strategy-summary {
-      background: #f1f5f9;
-      font-weight: 700;
+      background: var(--accent-soft);
+      font-weight: 600;
     }
     .schema-block {
       margin-top: 10px;
@@ -1235,28 +1439,32 @@ _HTML = """<!doctype html>
     .controls-card {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      gap: 14px;
     }
     .analyzer-filter-row {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      gap: 14px;
       grid-column: 1 / -1;
     }
     .controls-card .full { grid-column: 1 / -1; }
     .controls-card select[multiple] {
+      appearance: auto;
+      -webkit-appearance: auto;
+      -moz-appearance: auto;
       height: 260px;
-      padding: 6px;
+      padding: 10px;
       font-family: inherit;
-      border-radius: 10px;
+      border-radius: 16px;
       border: 1px solid var(--line);
-      background: #fff;
+      background: var(--panel-strong);
+      background-image: none;
       color: var(--ink);
     }
     select option { padding: 4px; }
     .small {
       font-size: 0.85rem;
-      color: #475569;
+      color: var(--ink-soft);
     }
     .status {
       font-size: 0.9rem;
@@ -1264,23 +1472,24 @@ _HTML = """<!doctype html>
       min-height: 1.25rem;
     }
     .success { color: #0369a1; }
-    .danger { color: #b91c1c; }
+    .danger { color: var(--danger); }
     .run-analysis-wide {
       width: 100%;
-      margin-top: 10px;
-      background: #16a34a;
+      margin-top: 12px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
     }
     .remove-leg {
       border: 0;
       background: transparent;
-      color: #94a3b8;
+      color: var(--muted);
       font-weight: 700;
       cursor: pointer;
       padding: 0 4px;
       font-size: 1rem;
       line-height: 1;
+      box-shadow: none;
     }
-    .remove-leg:hover { color: #64748b; }
+    .remove-leg:hover { color: var(--ink); transform: none; }
     .side-group {
       display: inline-flex;
       gap: 6px;
@@ -1296,32 +1505,41 @@ _HTML = """<!doctype html>
       opacity: 0.55;
     }
     .side-btn.active { opacity: 1; }
-    .buy-btn { background: #166534; }
-    .sell-btn { background: #b91c1c; }
+    .buy-btn { background: var(--success); }
+    .sell-btn { background: var(--danger); }
     .qty-input {
       width: 100px;
     }
     .tab-nav {
       display: flex;
       gap: 10px;
-      margin: 14px 0;
+      margin: 0;
       flex-wrap: wrap;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.62);
+      backdrop-filter: blur(10px);
+      width: fit-content;
     }
     .tab-button {
       border: 1px solid var(--line);
-      background: #fff;
+      background: transparent;
       color: var(--ink);
       font-weight: 500;
       opacity: 0.8;
+      box-shadow: none;
+      min-width: 172px;
     }
     .tab-button.active {
       color: #fff;
-      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       opacity: 1;
+      box-shadow: 0 12px 24px rgba(234, 88, 12, 0.18);
     }
     .tab-panel {
       display: none;
-      margin-top: 0;
+      margin-top: 24px;
     }
     .tab-panel.active {
       display: block;
@@ -1331,22 +1549,81 @@ _HTML = """<!doctype html>
       from { opacity: 0; transform: translateY(3px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #f8f7f5;
+        --ink-soft: rgba(248, 247, 245, 0.78);
+        --bg: #171615;
+        --panel: rgba(33, 30, 27, 0.92);
+        --panel-strong: #211e1b;
+        --panel-muted: #2b2622;
+        --line: rgba(255, 255, 255, 0.09);
+        --muted: rgba(248, 247, 245, 0.58);
+        --shadow-card: 0 1px 2px rgba(0,0,0,0.22), 0 18px 40px rgba(0,0,0,0.24);
+        --shadow-float: 0 24px 60px rgba(0,0,0,0.34);
+      }
+      body {
+        background:
+          radial-gradient(80rem 32rem at 0% 0%, rgba(251, 146, 60, 0.12) 0%, transparent 55%),
+          radial-gradient(64rem 28rem at 100% 0%, rgba(120, 113, 108, 0.1) 0%, transparent 50%),
+          var(--bg);
+      }
+      .surface,
+      .tab-nav { background: rgba(33, 30, 27, 0.72); }
+      th { background: rgba(43, 38, 34, 0.96); }
+      .chart-svg,
+      .chart-wrap,
+      .result-wrap,
+      .stat-tile { background: var(--panel-strong); }
+    }
     @media (max-width: 1100px) {
       .grid { grid-template-columns: 1fr; }
       .controls-card { grid-template-columns: 1fr; }
       .controls-card .full { grid-column: auto; }
-      .tab-nav { gap: 8px; }
-      .tab-button { width: 100%; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .tab-nav { gap: 8px; width: 100%; }
+      .tab-button { width: 100%; min-width: 0; }
+      .hero { padding: 14px 18px; }
+    }
+    @media (max-width: 720px) {
+      .wrap { padding: 16px; }
+      .hero { border-radius: 20px; }
+      .surface { padding: 14px; border-radius: 24px; }
+      .card { padding: 16px; border-radius: 20px; }
+      .brand-mark {
+        width: 36px;
+        height: 36px;
+        font-size: 0.82rem;
+      }
+      .brand-title { font-size: 1.35rem; }
+      h1 {
+        white-space: normal;
+        max-width: 10ch;
+      }
+      .stats-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>SPX Playground</h1>
-    <div class="sub">Build SPX strategies and analyze option movement by contract.</div>
-    <div class="tab-nav">
-      <button type="button" class="tab-button active" data-tab="strategy">Strategy</button>
-      <button type="button" class="tab-button" data-tab="analyzer">Options Analyzer</button>
+  <div class="wrap app-shell">
+    <section class="hero">
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-mark">MP</div>
+          <div class="brand-copy">
+            <span class="brand-title">Market&nbsp;&nbsp;Playground</span>
+          </div>
+        </div>
+      </div>
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <h1>Explore, interact, and discover</h1>
+        </div>
+      </div>
+    </section>
+    <div class="surface">
+      <div class="tab-nav">
+      <button type="button" class="tab-button active" data-tab="strategy">Strategy Replay</button>
     </div>
 
     <section id="tab-strategy" class="tab-panel active" data-tab="strategy">
@@ -1408,7 +1685,7 @@ _HTML = """<!doctype html>
             <table id="strategyLegsTable">
               <thead>
                 <tr>
-                  <th></th><th>Leg</th><th>Side</th><th>Quantity</th><th>Matches</th><th>Resolved At</th>
+                  <th></th><th>Leg</th><th>Side</th><th>Quantity</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -1417,7 +1694,7 @@ _HTML = """<!doctype html>
           <div class="controls-card" style="margin-top:12px;">
             <div class="section-heading">Exit Criteria</div>
             <div class="checkbox-row">
-              <input id="strategyHoldToExpiry" type="checkbox" />
+              <input id="strategyHoldToExpiry" type="checkbox" checked />
               <label for="strategyHoldToExpiry">Hold till expiry</label>
             </div>
             <div>
@@ -1465,10 +1742,17 @@ _HTML = """<!doctype html>
           </div>
         </div>
         <div class="card">
-          <h2 style="margin-bottom: 6px;">Strategy Index Chart</h2>
+          <div class="chart-card-header">
+            <h2 style="margin-bottom: 6px;">Strategy Index Chart</h2>
+            <div class="chart-toggle-group" aria-label="Strategy chart overlay toggles">
+              <label class="chart-toggle-option"><input type="checkbox" name="strategyChartOverlayToggle" value="symbol" /> Symbol</label>
+              <label class="chart-toggle-option"><input type="checkbox" name="strategyChartOverlayToggle" value="vix" /> VIX Price</label>
+            </div>
+          </div>
           <div id="strategyIndexChartMeta" class="meta">Aligned at entry (T+0). 15-minute ET interpolation with blended average.</div>
           <div class="chart-wrap">
             <svg id="strategyIndexChartSvg" class="chart-svg" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
+            <div id="strategyIndexChartTooltip" class="chart-tooltip" aria-hidden="true"></div>
           </div>
           <div class="chart-legend">
             <span class="chart-legend-item"><span class="chart-legend-swatch" style="background:#cbd5e1;"></span>Trade lines</span>
@@ -1481,77 +1765,7 @@ _HTML = """<!doctype html>
       </div>
     </section>
 
-    <section id="tab-analyzer" class="tab-panel" data-tab="analyzer">
-      <div class="grid">
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Options Analyzer</h2>
-          <div class="meta">Track selected contracts and compare movement.</div>
-          <div class="controls-card" style="margin-top:10px;">
-            <div class="analyzer-filter-row">
-              <div>
-                <label for="analyzerSymbol">Symbol</label><br/>
-                <select id="analyzerSymbol" class="input">
-                  <option value="SPX">SPX</option>
-                </select>
-              </div>
-              <div>
-                <label for="analyzerOptionType">Option Type</label><br/>
-                <select id="analyzerOptionType" class="input">
-                  <option value="">All</option>
-                  <option value="CALL">CALL</option>
-                  <option value="PUT">PUT</option>
-                </select>
-              </div>
-              <div>
-                <label for="analyzerExpiration">Expiration</label><br/>
-                <select id="analyzerExpiration" class="input">
-                  <option value="">All Expirations</option>
-                </select>
-              </div>
-            </div>
-            <div class="full">
-              <div class="row" style="margin-top:4px;">
-                <span id="analyzerMeta" class="meta">Select 1-4 contracts and run analysis.</span>
-              </div>
-              <label for="analyzerContracts">Contracts (multi-select)</label>
-              <select id="analyzerContracts" multiple></select>
-            </div>
-            <div class="full">
-              <div class="result-wrap" style="margin-top:8px;">
-                <table id="analyzerLegsTable">
-                  <thead>
-                    <tr>
-                      <th></th><th>Contract</th><th>Side</th><th>Quantity</th>
-                    </tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </div>
-            <div class="full row">
-              <button id="analyzerRunStrategyBtn" class="run-analysis-wide secondary">Run Strategy Analysis</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="grid full">
-        <div class="card">
-          <h2 style="margin-bottom: 6px;">Strategy Time Series</h2>
-          <div id="analyzerStrategyMeta" class="meta">Use selected contracts with side/qty to analyze the combined strategy.</div>
-          <div class="result-wrap" style="margin-top:12px;">
-            <table id="analyzerStrategySeriesTable">
-              <thead>
-                <tr>
-                  <th>Snapshot</th><th>Contract</th><th>Spot</th><th>Price</th><th>Indexed</th><th>Leg Contribution</th><th>Strategy</th><th>Strategy Cost</th><th>Strategy P&L</th><th>Strategy Indexed</th><th>Spread</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </section>
-
+    </div>
   </div>
 
   <script>
@@ -1568,6 +1782,7 @@ _HTML = """<!doctype html>
       tableRows: [],
       historyRows: [],
       lastMeta: "",
+      chartOverlay: "",
     };
 
     const tabInitState = {
@@ -1683,15 +1898,15 @@ _HTML = """<!doctype html>
       return `${typeLabel} ${contract.strike_price} ${contract.expiration_date}`.trim();
     }
 
-    function buildSpotLookup(spotSeries) {
-      const normalized = (spotSeries || [])
-        .filter((row) => row.snapshot_ts && row.spot_price !== null && row.spot_price !== undefined)
-        .map((row) => ({ ts: row.snapshot_ts, value: Number(row.spot_price) }))
+    function buildMarketLookup(series, fieldName) {
+      const normalized = (series || [])
+        .filter((row) => row.snapshot_ts && row[fieldName] !== null && row[fieldName] !== undefined)
+        .map((row) => ({ ts: row.snapshot_ts, value: Number(row[fieldName]) }))
         .filter((row) => Number.isFinite(row.value))
         .sort((a, b) => parseTimestamp(a.ts) - parseTimestamp(b.ts));
       const times = normalized.map((row) => row.ts);
 
-      return function nearestSpot(ts) {
+      return function nearestValue(ts) {
         if (!times.length) return null;
         const target = parseTimestamp(ts);
         if (!target) return null;
@@ -1710,6 +1925,14 @@ _HTML = """<!doctype html>
         }
         return normalized[best] ? normalized[best].value : null;
       };
+    }
+
+    function buildSpotLookup(series) {
+      return buildMarketLookup(series, "spot_price");
+    }
+
+    function buildVixLookup(series) {
+      return buildMarketLookup(series, "implied_volatility_index");
     }
 
     function renderSimpleTable(selector, columns, rows) {
@@ -1769,6 +1992,18 @@ _HTML = """<!doctype html>
       return `${type} Δ${delta} DTE ${dte} @ ${entry}`;
     }
 
+    function hasMatchingStrategyLeg(candidate) {
+      return strategyState.legs.some((leg) => (
+        String(leg.side || "BUY") === String(candidate.side || "BUY")
+        && String(leg.option_type || "PUT") === String(candidate.option_type || "PUT")
+        && Number(leg.target_dte) === Number(candidate.target_dte)
+        && Number(leg.target_delta) === Number(candidate.target_delta)
+        && String(leg.entry_time || "") === String(candidate.entry_time || "")
+        && String(leg.snapshot_from_date || "") === String(candidate.snapshot_from_date || "")
+        && String(leg.snapshot_to_date || "") === String(candidate.snapshot_to_date || "")
+      ));
+    }
+
     function refreshStrategyExitCriteriaState() {
       const holdEl = document.getElementById("strategyHoldToExpiry");
       const exitDaysEl = document.getElementById("strategyExitDays");
@@ -1801,8 +2036,6 @@ _HTML = """<!doctype html>
       strategyState.legs.forEach((leg) => {
         const buyActive = leg.side === "BUY" ? "active" : "";
         const sellActive = leg.side === "SELL" ? "active" : "";
-        const resolvedAt = leg.entry_snapshot_ts ? formatLocalDateTime(leg.entry_snapshot_ts) : "";
-        const matchCount = Number(leg.matched_count) || 0;
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td><button type="button" class="remove-leg" data-leg-id="${String(leg.id)}">x</button></td>
@@ -1814,8 +2047,6 @@ _HTML = """<!doctype html>
             </div>
           </td>
           <td><input class="input qty-input" type="number" min="1" step="1" value="${Number(leg.quantity) || 1}" data-qty-leg-id="${String(leg.id)}" /></td>
-          <td>${escapeHtml(String(matchCount))}</td>
-          <td>${escapeHtml(resolvedAt)}</td>
         `;
         body.appendChild(tr);
       });
@@ -1903,6 +2134,19 @@ _HTML = """<!doctype html>
         meta.className = "meta danger";
         return;
       }
+      if (hasMatchingStrategyLeg({
+        side,
+        option_type: optionType,
+        target_dte: dte,
+        target_delta: roundedTargetDelta,
+        entry_time: entryTime,
+        snapshot_from_date: effectiveFromDate,
+        snapshot_to_date: effectiveToDate,
+      })) {
+        meta.textContent = "You already have a leg with matching criteria added. Feel free to adjust the quantity.";
+        meta.className = "meta danger";
+        return;
+      }
 
       const params = new URLSearchParams({
         symbol,
@@ -1941,6 +2185,8 @@ _HTML = """<!doctype html>
         target_delta: roundedTargetDelta,
         target_dte: dte,
         entry_time: entryTime,
+        snapshot_from_date: effectiveFromDate,
+        snapshot_to_date: effectiveToDate,
         isResolved: true,
         matched_count: keptContracts.length,
         entry_snapshot_ts: keptContracts[0] ? keptContracts[0].snapshot_ts : null,
@@ -1953,6 +2199,7 @@ _HTML = """<!doctype html>
 
     function transformStrategySeriesRows(rows, spotSeries, tradePlans, exitCriteria) {
       const nearestSpot = buildSpotLookup(spotSeries || []);
+      const nearestVix = buildVixLookup(spotSeries || []);
       const rowsByStreamer = new Map();
       rows.forEach((row) => {
         const streamer = row.streamer_symbol;
@@ -2077,6 +2324,7 @@ _HTML = """<!doctype html>
               trade_index: trade.trade_index,
               indexed,
               spot_price: nearestSpot(ts),
+              vix_price: nearestVix(ts),
               leg_contribution: contribution,
               resolved_contract: contractLabel(leg.contract),
               leg_label: strategyLegLabel(leg.leg_def),
@@ -2283,9 +2531,9 @@ _HTML = """<!doctype html>
         return;
       }
 
-      meta.textContent = `Final outcome across ${stats.tradeCount} completed trades.`;
+      const tradeLabel = stats.tradeCount === 1 ? "trade" : "trades";
+      meta.innerHTML = `Final outcome across completed trades.<span class="meta-emphasis">${escapeHtml(String(stats.tradeCount))} ${escapeHtml(tradeLabel)}</span>`;
       const items = [
-        ["Trades", String(stats.tradeCount)],
         ["Win Rate", formatStatPercent(stats.winRate)],
         ["Avg Win", formatStatAmount(stats.avgWin)],
         ["Avg Loss", formatStatAmount(stats.avgLoss)],
@@ -2293,10 +2541,8 @@ _HTML = """<!doctype html>
         ["Gain/Loss %", formatStatPercent(stats.avgGainLossPct)],
         ["Best Trade", formatStatAmount(stats.bestTradePnl)],
         ["Worst Trade", formatStatAmount(stats.worstTradePnl)],
+        ["Profit Factor", stats.profitFactor != null && Number.isFinite(stats.profitFactor) ? stats.profitFactor.toFixed(2) : "n/a"],
       ];
-      if (stats.profitFactor != null && Number.isFinite(stats.profitFactor)) {
-        items.push(["Profit Factor", stats.profitFactor.toFixed(2)]);
-      }
 
       items.forEach(([label, value]) => {
         const tile = document.createElement("div");
@@ -2395,21 +2641,63 @@ _HTML = """<!doctype html>
       return String(Math.max(0, diff));
     }
 
-    function linePath(points, xScale, yScale) {
+    function formatStrategyHoverDelta(value, profitBelow100) {
+      if (value == null || !Number.isFinite(Number(value))) return "";
+      const rawDelta = Number(value) - 100;
+      const signedDelta = profitBelow100 ? -rawDelta : rawDelta;
+      const sign = signedDelta > 0 ? "+" : "";
+      return `${sign}${signedDelta.toFixed(2)}%`;
+    }
+
+    function formatStrategyOverlayValue(value, overlayMode) {
+      if (value == null || !Number.isFinite(Number(value))) return "";
+      const numeric = Number(value);
+      if (overlayMode === "vix") return (numeric * 100).toFixed(2);
+      return numeric.toFixed(2);
+    }
+
+    function isVisibleStrategyChartTime(ts) {
+      if (!ts) return false;
+      const etMinutes = parseHmToMinutes(formatEtHm(ts));
+      if (etMinutes == null) return false;
+      const dayStart = 7 * 60 + 30;
+      const dayEnd = 18 * 60;
+      return etMinutes >= dayStart && etMinutes < dayEnd;
+    }
+
+    function getSelectedStrategyChartOverlay() {
+      const checked = document.querySelector('input[name="strategyChartOverlayToggle"]:checked');
+      return checked ? checked.value : "";
+    }
+
+    function stepPath(points, xScale, yScale) {
       let d = "";
       points.forEach((p, idx) => {
-        const cmd = idx === 0 ? "M" : "L";
-        d += `${cmd}${xScale(p.x).toFixed(2)},${yScale(p.y).toFixed(2)} `;
+        const x = xScale(p.x).toFixed(2);
+        const y = yScale(p.y).toFixed(2);
+        if (idx === 0) {
+          d += `M${x},${y} `;
+          return;
+        }
+        const prev = points[idx - 1];
+        const prevY = yScale(prev.y).toFixed(2);
+        d += `L${x},${prevY} L${x},${y} `;
       });
       return d.trim();
     }
 
     function renderStrategyIndexChart(rows) {
+      strategyState.historyRows = Array.isArray(rows) ? rows : [];
       const svg = document.getElementById("strategyIndexChartSvg");
       const meta = document.getElementById("strategyIndexChartMeta");
-      if (!svg || !meta) return;
+      const tooltip = document.getElementById("strategyIndexChartTooltip");
+      const wrap = svg ? svg.closest(".chart-wrap") : null;
+      if (!svg || !meta || !tooltip || !wrap) return;
 
       svg.innerHTML = "";
+      tooltip.classList.remove("visible");
+      tooltip.innerHTML = "";
+      const overlayMode = getSelectedStrategyChartOverlay();
       const detailRows = (rows || []).filter((row) => !row.isStrategySummary);
       if (!detailRows.length) {
         meta.textContent = "No strategy data to chart.";
@@ -2431,12 +2719,41 @@ _HTML = """<!doctype html>
           tsDate,
           strategyPrice: Number(strategyPrice),
           strategyCost: strategyCost == null ? null : Number(strategyCost),
+          spotPrice: row.spot_price == null ? null : Number(row.spot_price),
+          vixPrice: row.vix_price == null ? null : Number(row.vix_price),
           expirationDate: String(row.expiration_date || ""),
         });
       });
 
       const stepMs = 15 * 60 * 1000;
       const tradeSeries = [];
+      function buildAlignedRawSteps(sorted, entryDate, valueKey) {
+        const points = sorted
+          .filter((p) => p[valueKey] != null && Number.isFinite(Number(p[valueKey])))
+          .map((p) => ({
+            elapsedMs: p.tsDate.getTime() - entryDate.getTime(),
+            value: Number(p[valueKey]),
+          }));
+        if (!points.length) return [];
+        const maxElapsed = points[points.length - 1].elapsedMs;
+        if (!Number.isFinite(maxElapsed) || maxElapsed < 0) return [];
+        const steps = [];
+        const maxStep = Math.floor(maxElapsed / stepMs);
+        for (let s = 0; s <= maxStep; s += 1) {
+          const ms = s * stepMs;
+          if (ms < points[0].elapsedMs || ms > maxElapsed) {
+            steps.push(null);
+            continue;
+          }
+          let value = points[0].value;
+          for (let i = 1; i < points.length; i += 1) {
+            if (ms < points[i].elapsedMs) break;
+            value = points[i].value;
+          }
+          steps.push(value == null ? null : Number(value));
+        }
+        return steps;
+      }
       Array.from(byTrade.entries())
         .sort((a, b) => Number(a[0]) - Number(b[0]))
         .forEach(([tradeKey, points]) => {
@@ -2459,28 +2776,21 @@ _HTML = """<!doctype html>
           const maxElapsed = normalized[normalized.length - 1].elapsedMs;
           if (!Number.isFinite(maxElapsed) || maxElapsed < 0) return;
 
-          function interpolate(ms) {
+          function carryForward(ms) {
             if (ms < normalized[0].elapsedMs || ms > normalized[normalized.length - 1].elapsedMs) return null;
-            for (let i = 0; i < normalized.length; i += 1) {
-              if (normalized[i].elapsedMs === ms) return normalized[i].indexed;
-            }
+            let value = normalized[0].indexed;
             for (let i = 1; i < normalized.length; i += 1) {
-              const a = normalized[i - 1];
-              const b = normalized[i];
-              if (ms < a.elapsedMs || ms > b.elapsedMs) continue;
-              const span = b.elapsedMs - a.elapsedMs;
-              if (span <= 0) return a.indexed;
-              const t = (ms - a.elapsedMs) / span;
-              return a.indexed + (b.indexed - a.indexed) * t;
+              if (ms < normalized[i].elapsedMs) break;
+              value = normalized[i].indexed;
             }
-            return null;
+            return value;
           }
 
           const steps = [];
           const maxStep = Math.floor(maxElapsed / stepMs);
           for (let s = 0; s <= maxStep; s += 1) {
             const ms = s * stepMs;
-            const val = interpolate(ms);
+            const val = carryForward(ms);
             steps.push(val == null ? null : Number(val));
           }
 
@@ -2490,6 +2800,8 @@ _HTML = """<!doctype html>
             entryCost: entry.strategyCost,
             expirationDate: entry.expirationDate,
             steps,
+            symbolSteps: buildAlignedRawSteps(sorted, entry.tsDate, "spotPrice"),
+            vixSteps: buildAlignedRawSteps(sorted, entry.tsDate, "vixPrice"),
           });
         });
 
@@ -2510,8 +2822,32 @@ _HTML = """<!doctype html>
         blended.push(vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
       }
 
+      const overlayValues = [];
+      for (let i = 0; i < maxSteps; i += 1) {
+        if (!overlayMode) {
+          overlayValues.push(null);
+          continue;
+        }
+        const vals = tradeSeries
+          .map((t) => (overlayMode === "vix" ? t.vixSteps[i] : t.symbolSteps[i]))
+          .filter((v) => v != null && Number.isFinite(v));
+        overlayValues.push(vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
+      }
+
       const firstTrade = tradeSeries[0];
       const sampleTimes = Array.from({ length: maxSteps }, (_, i) => new Date(firstTrade.entryDate.getTime() + i * stepMs));
+      const visibleIndices = sampleTimes
+        .map((ts, idx) => (isVisibleStrategyChartTime(ts) ? idx : -1))
+        .filter((idx) => idx >= 0);
+      if (!visibleIndices.length) {
+        meta.textContent = "No intraday ET samples available for chart.";
+        return;
+      }
+
+      const compressedIndexByOriginal = new Map();
+      visibleIndices.forEach((idx, compressedIdx) => {
+        compressedIndexByOriginal.set(idx, compressedIdx);
+      });
       const allY = tradeSeries
         .flatMap((t) => t.steps)
         .concat(blended)
@@ -2527,12 +2863,54 @@ _HTML = """<!doctype html>
 
       const width = 1200;
       const height = 320;
-      const m = { top: 18, right: 16, bottom: 78, left: 56 };
+      const m = { top: 18, right: 56, bottom: 78, left: 56 };
       const innerW = width - m.left - m.right;
       const innerH = height - m.top - m.bottom;
-      const xMax = Math.max(1, maxSteps - 1);
-      const xScale = (x) => m.left + (x / xMax) * innerW;
+      const compressedXMax = Math.max(1, visibleIndices.length - 1);
+      const xScale = (originalIdx) => {
+        const compressedIdx = compressedIndexByOriginal.get(originalIdx);
+        if (compressedIdx == null) return null;
+        return m.left + (compressedIdx / compressedXMax) * innerW;
+      };
       const yScale = (y) => m.top + ((yMax - y) / (yMax - yMin)) * innerH;
+
+      const overlayFinite = overlayValues.filter((v) => v != null && Number.isFinite(v));
+      let overlayYScale = null;
+      if (overlayFinite.length) {
+        let overlayMin = Math.min(...overlayFinite);
+        let overlayMax = Math.max(...overlayFinite);
+        if (Math.abs(overlayMax - overlayMin) < 1e-9) {
+          const pad = Math.max(1, Math.abs(overlayMax) * 0.03);
+          overlayMin -= pad;
+          overlayMax += pad;
+        } else {
+          const pad = (overlayMax - overlayMin) * 0.08;
+          overlayMin -= pad;
+          overlayMax += pad;
+        }
+        overlayYScale = (y) => m.top + ((overlayMax - y) / (overlayMax - overlayMin)) * innerH;
+
+        [overlayMax, (overlayMin + overlayMax) / 2, overlayMin].forEach((value) => {
+          const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          txt.setAttribute("x", String(m.left + innerW + 8));
+          txt.setAttribute("y", String(overlayYScale(value) + 4));
+          txt.setAttribute("text-anchor", "start");
+          txt.setAttribute("font-size", "11");
+          txt.setAttribute("fill", overlayMode === "vix" ? "#9a3412" : "#2563eb");
+          txt.textContent = formatStrategyOverlayValue(value, overlayMode);
+          svg.appendChild(txt);
+        });
+
+        const rightAxis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        rightAxis.setAttribute("x1", String(m.left + innerW));
+        rightAxis.setAttribute("x2", String(m.left + innerW));
+        rightAxis.setAttribute("y1", String(m.top));
+        rightAxis.setAttribute("y2", String(m.top + innerH));
+        rightAxis.setAttribute("stroke", overlayMode === "vix" ? "#c2410c" : "#2563eb");
+        rightAxis.setAttribute("stroke-width", "1");
+        rightAxis.setAttribute("opacity", "0.45");
+        svg.appendChild(rightAxis);
+      }
 
       const tradeTypes = new Set(
         tradeSeries.map((t) => (t.entryCost == null ? "unknown" : (t.entryCost < 0 ? "credit" : "debit")))
@@ -2590,30 +2968,60 @@ _HTML = """<!doctype html>
         svg.appendChild(baselineLabel);
       }
 
-      for (let i = 1; i < blended.length; i += 1) {
-        const a = blended[i - 1];
-        const b = blended[i];
+      const visibleDayBoundaries = [];
+      for (let i = 1; i < visibleIndices.length; i += 1) {
+        const prevIdx = visibleIndices[i - 1];
+        const currIdx = visibleIndices[i];
+        const prevKey = formatEtDateKey(sampleTimes[prevIdx]);
+        const currKey = formatEtDateKey(sampleTimes[currIdx]);
+        if (prevKey && currKey && prevKey !== currKey) {
+          visibleDayBoundaries.push(currIdx);
+        }
+      }
+      visibleDayBoundaries.forEach((idx) => {
+        const x = xScale(idx);
+        if (x == null) return;
+        const boundary = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        boundary.setAttribute("x1", String(x));
+        boundary.setAttribute("x2", String(x));
+        boundary.setAttribute("y1", String(m.top));
+        boundary.setAttribute("y2", String(m.top + innerH));
+        boundary.setAttribute("stroke", "#94a3b8");
+        boundary.setAttribute("stroke-width", "1");
+        boundary.setAttribute("stroke-dasharray", "5 5");
+        boundary.setAttribute("opacity", "0.8");
+        svg.appendChild(boundary);
+      });
+
+      const visibleBlendPts = visibleIndices
+        .map((i) => (blended[i] == null || !Number.isFinite(blended[i]) ? null : ({ x: i, y: blended[i] })))
+        .filter(Boolean);
+
+      for (let i = 1; i < visibleBlendPts.length; i += 1) {
+        const prevPoint = visibleBlendPts[i - 1];
+        const nextPoint = visibleBlendPts[i];
+        const a = prevPoint.y;
+        const b = nextPoint.y;
         if (a == null || b == null) continue;
-        const mid = (a + b) / 2;
-        const isProfit = profitBelow100 ? mid <= 100 : mid >= 100;
+        const isProfit = profitBelow100 ? a <= 100 : a >= 100;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        const x1 = xScale(i - 1);
-        const x2 = xScale(i);
-        const y1 = yScale(a);
-        const y2 = yScale(b);
+        const x1 = xScale(prevPoint.x);
+        const x2 = xScale(nextPoint.x);
+        if (x1 == null || x2 == null) continue;
+        const y = yScale(a);
         const yBase = yScale(100);
-        path.setAttribute("d", `M${x1},${yBase} L${x1},${y1} L${x2},${y2} L${x2},${yBase} Z`);
+        path.setAttribute("d", `M${x1},${yBase} L${x1},${y} L${x2},${y} L${x2},${yBase} Z`);
         path.setAttribute("fill", isProfit ? "rgba(22,163,74,0.24)" : "rgba(220,38,38,0.22)");
         svg.appendChild(path);
       }
 
       tradeSeries.forEach((series) => {
         const pts = series.steps
-          .map((v, i) => (v == null ? null : ({ x: i, y: v })))
+          .map((v, i) => (v == null || !compressedIndexByOriginal.has(i) ? null : ({ x: i, y: v })))
           .filter(Boolean);
         if (pts.length < 2) return;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", linePath(pts, xScale, yScale));
+        path.setAttribute("d", stepPath(pts, xScale, yScale));
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", "#94a3b8");
         path.setAttribute("stroke-width", "1");
@@ -2621,22 +3029,138 @@ _HTML = """<!doctype html>
         svg.appendChild(path);
       });
 
-      const blendPts = blended
-        .map((v, i) => (v == null ? null : ({ x: i, y: v })))
-        .filter(Boolean);
-      if (blendPts.length >= 2) {
+      if (visibleBlendPts.length >= 2) {
         const blendPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        blendPath.setAttribute("d", linePath(blendPts, xScale, yScale));
+        blendPath.setAttribute("d", stepPath(visibleBlendPts, xScale, yScale));
         blendPath.setAttribute("fill", "none");
         blendPath.setAttribute("stroke", "#0f172a");
         blendPath.setAttribute("stroke-width", "2.4");
         svg.appendChild(blendPath);
       }
 
+      if (overlayYScale) {
+        const overlayPts = overlayValues
+          .map((v, i) => (v == null || !compressedIndexByOriginal.has(i) ? null : ({ x: i, y: v })))
+          .filter(Boolean);
+        if (overlayPts.length >= 2) {
+          const overlayPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          overlayPath.setAttribute("d", stepPath(overlayPts, xScale, overlayYScale));
+          overlayPath.setAttribute("fill", "none");
+          overlayPath.setAttribute("stroke", overlayMode === "vix" ? "#c2410c" : "#2563eb");
+          overlayPath.setAttribute("stroke-width", "1.8");
+          overlayPath.setAttribute("stroke-dasharray", "6 4");
+          overlayPath.setAttribute("opacity", "0.7");
+          svg.appendChild(overlayPath);
+        }
+      }
+
+      const hoverGuide = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      hoverGuide.setAttribute("y1", String(m.top));
+      hoverGuide.setAttribute("y2", String(m.top + innerH));
+      hoverGuide.setAttribute("stroke", "#0f172a");
+      hoverGuide.setAttribute("stroke-width", "1");
+      hoverGuide.setAttribute("stroke-dasharray", "4 4");
+      hoverGuide.setAttribute("opacity", "0");
+      hoverGuide.setAttribute("pointer-events", "none");
+      svg.appendChild(hoverGuide);
+
+      const hoverMarker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      hoverMarker.setAttribute("r", "4.5");
+      hoverMarker.setAttribute("fill", "#ffffff");
+      hoverMarker.setAttribute("stroke", "#0f172a");
+      hoverMarker.setAttribute("stroke-width", "2");
+      hoverMarker.setAttribute("opacity", "0");
+      hoverMarker.setAttribute("pointer-events", "none");
+      svg.appendChild(hoverMarker);
+
+      function hideTooltip() {
+        tooltip.classList.remove("visible");
+        tooltip.innerHTML = "";
+        tooltip.style.transform = "translate(12px, -12px)";
+        hoverGuide.setAttribute("opacity", "0");
+        hoverMarker.setAttribute("opacity", "0");
+      }
+
+      function findNearestBlendedIndex(target) {
+        if (!visibleIndices.length) return -1;
+        let bestIdx = -1;
+        let bestDist = Infinity;
+        for (const i of visibleIndices) {
+          const value = blended[i];
+          if (value == null || !Number.isFinite(value)) continue;
+          const dist = Math.abs(i - target);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestIdx = i;
+          }
+        }
+        return bestIdx;
+      }
+
+      svg.addEventListener("mouseleave", hideTooltip);
+      svg.addEventListener("mousemove", (event) => {
+        const rect = svg.getBoundingClientRect();
+        const wrapRect = wrap.getBoundingClientRect();
+        if (!rect.width || !rect.height) {
+          hideTooltip();
+          return;
+        }
+
+        const relX = ((event.clientX - rect.left) / rect.width) * width;
+        if (relX < m.left || relX > m.left + innerW) {
+          hideTooltip();
+          return;
+        }
+
+        const targetCompressed = Math.round(((relX - m.left) / innerW) * compressedXMax);
+        const clampedCompressed = Math.max(0, Math.min(compressedXMax, targetCompressed));
+        const targetOriginal = visibleIndices[clampedCompressed];
+        const idx = findNearestBlendedIndex(targetOriginal);
+        if (idx < 0) {
+          hideTooltip();
+          return;
+        }
+
+        const ts = sampleTimes[idx];
+        const value = blended[idx];
+        const chartX = xScale(idx);
+        const chartY = yScale(value);
+        hoverGuide.setAttribute("x1", String(chartX));
+        hoverGuide.setAttribute("x2", String(chartX));
+        hoverGuide.setAttribute("opacity", "0.7");
+        hoverMarker.setAttribute("cx", String(chartX));
+        hoverMarker.setAttribute("cy", String(chartY));
+        hoverMarker.setAttribute("opacity", "1");
+
+        const overlayValue = overlayMode ? overlayValues[idx] : null;
+        const overlayLabel = overlayMode === "vix" ? "VIX" : "Symbol";
+        const overlayMarkup = overlayValue != null && Number.isFinite(overlayValue)
+          ? `<div class="chart-tooltip-label">${escapeHtml(overlayLabel)}: ${escapeHtml(formatStrategyOverlayValue(overlayValue, overlayMode))}</div>`
+          : "";
+        tooltip.innerHTML = `<div class="chart-tooltip-label">${escapeHtml(formatLocalDateTime(ts))}</div><div class="chart-tooltip-value">${escapeHtml(formatStrategyHoverDelta(value, profitBelow100))}</div>${overlayMarkup}`;
+        tooltip.classList.add("visible");
+
+        const tooltipWidth = tooltip.offsetWidth || 0;
+        const tooltipHeight = tooltip.offsetHeight || 0;
+        const cursorLeft = event.clientX - wrapRect.left;
+        const cursorTop = event.clientY - wrapRect.top;
+        const spaceRight = wrapRect.width - cursorLeft;
+        const placeLeft = spaceRight < tooltipWidth + 28;
+        const left = Math.min(wrapRect.width - 12, Math.max(12, cursorLeft));
+        const top = Math.min(wrapRect.height - 12, Math.max(tooltipHeight + 12, cursorTop));
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+        tooltip.style.transform = placeLeft
+          ? "translate(calc(-100% - 12px), -12px)"
+          : "translate(12px, -12px)";
+      });
+
       const tickTarget = 8;
-      const tickEvery = Math.max(1, Math.ceil(maxSteps / tickTarget));
-      for (let i = 0; i < maxSteps; i += tickEvery) {
+      const tickEvery = Math.max(1, Math.ceil(visibleIndices.length / tickTarget));
+      for (let visiblePos = 0; visiblePos < visibleIndices.length; visiblePos += tickEvery) {
+        const i = visibleIndices[visiblePos];
         const x = xScale(i);
+        if (x == null) continue;
         const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
         tick.setAttribute("x1", String(x));
         tick.setAttribute("x2", String(x));
@@ -2670,6 +3194,7 @@ _HTML = """<!doctype html>
       svg.appendChild(xAxis);
 
       let metaMsg = `Blended ${tradeSeries.length} aligned trade series on a 15-minute ET grid.`;
+      metaMsg += " Overnight ET hours from 6:00 PM to 7:30 AM are visually compressed; dashed lines mark each new day.";
       if (mixedTradeTypes) {
         metaMsg += " Mixed debit/credit entries detected; shading uses reference trade semantics.";
       }
@@ -2779,7 +3304,7 @@ _HTML = """<!doctype html>
               entry_time: String(leg.entry_time || ""),
               entry_date: tradeDate,
               target_side: String(leg.side || "BUY"),
-              window_minutes: "30",
+              window_minutes: "5",
               strict_dte: "1",
             });
             const res = await fetch(`/api/options/resolve-leg?${params.toString()}`);
@@ -2906,8 +3431,8 @@ _HTML = """<!doctype html>
       renderStrategySeriesTable(transformed);
       renderStrategyTradeMatrixTable(transformed);
       renderStrategyIndexChart(transformed);
-      meta.textContent = `Built ${completedTradeCount} completed daily trades from ${tradeDates.length} dates (${skippedDates} skipped before entry), ${completedContracts} contracts, ${rows.length} option rows.`;
-      meta.className = "meta success";
+      meta.textContent = "";
+      meta.className = "meta";
     }
 
     function initStrategyTab() {
@@ -2920,6 +3445,20 @@ _HTML = """<!doctype html>
         .addEventListener("change", loadStrategySnapshotDateOptions);
       document.getElementById("strategyResolveBtn").addEventListener("click", resolveStrategyLeg);
       document.getElementById("strategyRunBtn").addEventListener("click", runStrategyAnalysis);
+      document.querySelectorAll('input[name="strategyChartOverlayToggle"]').forEach((inputEl) => {
+        inputEl.addEventListener("change", (event) => {
+          const current = event.currentTarget;
+          if (current.checked) {
+            document.querySelectorAll('input[name="strategyChartOverlayToggle"]').forEach((other) => {
+              if (other !== current) other.checked = false;
+            });
+            strategyState.chartOverlay = current.value || "";
+          } else {
+            strategyState.chartOverlay = "";
+          }
+          renderStrategyIndexChart(strategyState.historyRows || []);
+        });
+      });
       document.getElementById("strategyHoldToExpiry").addEventListener("change", refreshStrategyExitCriteriaState);
       refreshStrategyExitCriteriaState();
       renderStrategyLegsTable();
@@ -3507,6 +4046,7 @@ _HTML = """<!doctype html>
 
     function initAnalyzerTab() {
       if (tabInitState.analyzer) return;
+      if (!document.getElementById("analyzerSymbol")) return;
       tabInitState.analyzer = true;
 
       bindAnalyzerSelectionUX();
@@ -3532,5 +4072,7 @@ _HTML = """<!doctype html>
 </body>
 </html>
 """
+
+
 if __name__ == "__main__":
     main()

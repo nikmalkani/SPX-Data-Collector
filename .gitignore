@@ -4,10 +4,12 @@ __pycache__/
 *.pyc
 *.sqlite
 *.db
+*.db.bak.*
 *.csv
 .DS_Store
 spx_market_snapshots.csv
 latest_snapshot_top20.csv
+backups/
 
 *.egg-info/
 

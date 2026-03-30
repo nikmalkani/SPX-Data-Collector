@@ -1897,13 +1897,13 @@ _HTML = """<!doctype html>
     <div class="surface">
       <div class="tab-nav">
       <div class="tab-heading">Strategy Replay</div>
+      <div class="meta" style="margin-top:10px;">Build a strategy by setting your entry rules and clicking 'Add Leg'. Repeat to build a spread or multi-leg strategy, then choose your exit criteria and run the replay.</div>
     </div>
 
     <section id="tab-strategy" class="tab-panel active" data-tab="strategy">
       <div class="grid full">
         <div class="card">
           <h2 style="margin-bottom: 6px;">Strategy</h2>
-          <div class="meta">Build and run strategy legs.</div>
           <div class="controls-card" style="margin-top:10px;">
             <div>
               <label for="strategySymbol">Symbol</label><br/>
@@ -1963,6 +1963,7 @@ _HTML = """<!doctype html>
             </div>
           </div>
           <div id="strategyBuilderMeta" class="meta" style="margin-top:4px;">Resolve a leg to add it to the strategy.</div>
+          <div id="strategyLegsNote" class="meta is-hidden" style="margin-top:12px;">Review your legs here. Update quantities, toggle buy/sell, or remove any leg before running the strategy.</div>
           <div id="strategyLegsWrap" class="result-wrap is-hidden" style="margin-top:12px;">
             <table id="strategyLegsTable">
               <thead>
@@ -1975,6 +1976,7 @@ _HTML = """<!doctype html>
           </div>
           <div class="controls-card" style="margin-top:12px;">
             <div class="section-heading">Exit Criteria</div>
+            <div class="meta" style="grid-column: 1 / -1; margin-top:-4px;">Defaults to 'Hold till expiry', toggle to set exit criteria</div>
             <div class="checkbox-row">
               <input id="strategyHoldToExpiry" type="checkbox" checked />
               <label for="strategyHoldToExpiry">Hold till expiry</label>
@@ -1992,7 +1994,7 @@ _HTML = """<!doctype html>
             </div>
           </div>
           <button id="strategyRunBtn" class="run-analysis-wide" style="display:none; margin-top:12px;">Run Strategy</button>
-          <div id="strategyAnalysisMeta" class="meta" style="margin-top:4px;">Resolve at least one leg to analyze.</div>
+          <div id="strategyAnalysisMeta" class="meta" style="margin-top:4px;">Run the replay across all dates in your selected range to analyze</div>
         </div>
       </div>
 
@@ -2484,9 +2486,13 @@ _HTML = """<!doctype html>
     function renderStrategyLegsTable() {
       const body = document.querySelector("#strategyLegsTable tbody");
       const wrap = document.getElementById("strategyLegsWrap");
+      const note = document.getElementById("strategyLegsNote");
       body.innerHTML = "";
       if (wrap) {
         wrap.classList.toggle("is-hidden", !strategyState.legs.length);
+      }
+      if (note) {
+        note.classList.toggle("is-hidden", !strategyState.legs.length);
       }
       strategyState.legs.forEach((leg) => {
         const buyActive = leg.side === "BUY" ? "active" : "";

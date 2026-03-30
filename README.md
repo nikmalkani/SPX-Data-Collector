@@ -1,6 +1,6 @@
-# SPX Data Collector
+# Market Playground: SPX Strategy Analyzer
 
-SPX Data Collector is a Python project for collecting SPX spot and options snapshot data from tastytrade, storing it in SQL, and exploring the results through local backtest and analysis UIs.
+Market Playground is a Python project for collecting SPX spot and options snapshot data from tastytrade, storing them in SQL, and exploring historical strategy behavior through local backtest and analysis UIs.
 
 The repo has three main pieces:
 

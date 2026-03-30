@@ -3184,9 +3184,9 @@ _HTML = """<!doctype html>
       if (!ts) return false;
       const etMinutes = parseHmToMinutes(formatEtHm(ts));
       if (etMinutes == null) return false;
-      const dayStart = 7 * 60 + 30;
-      const dayEnd = 18 * 60;
-      return etMinutes >= dayStart && etMinutes < dayEnd;
+      const regularSessionStart = 9 * 60 + 30;
+      const regularSessionEnd = 16 * 60;
+      return etMinutes >= regularSessionStart && etMinutes <= regularSessionEnd;
     }
 
     function isMobileStrategyChartViewport() {
@@ -3322,20 +3322,12 @@ _HTML = """<!doctype html>
 
       const firstTrade = tradeSeries[0];
       const sampleTimes = Array.from({ length: maxSteps }, (_, i) => new Date(firstTrade.entryDate.getTime() + i * stepMs));
-      const finalBlendedIndex = (() => {
-        for (let i = blended.length - 1; i >= 0; i -= 1) {
-          if (blended[i] != null && Number.isFinite(blended[i])) return i;
-        }
-        return -1;
-      })();
       const visibleIndexSet = new Set(sampleTimes
         .map((ts, idx) => (isVisibleStrategyChartTime(ts) ? idx : -1))
         .filter((idx) => idx >= 0));
-      if (visibleIndexSet.size) visibleIndexSet.add(0);
-      if (finalBlendedIndex >= 0) visibleIndexSet.add(finalBlendedIndex);
       const visibleIndices = Array.from(visibleIndexSet).sort((a, b) => a - b);
       if (!visibleIndices.length) {
-        meta.textContent = "No intraday ET samples available for chart.";
+        meta.textContent = "No regular market-hours ET samples available for chart.";
         return;
       }
 
@@ -3660,7 +3652,7 @@ _HTML = """<!doctype html>
       svg.appendChild(xAxis);
 
       let metaMsg = `Blended ${tradeSeries.length} aligned trade series on a 15-minute ET grid.`;
-      metaMsg += " Overnight ET hours from 6:00 PM to 7:30 AM are visually compressed; dashed lines mark each new day.";
+      metaMsg += " Only regular market hours from 9:30 AM to 4:00 PM ET are shown; dashed lines mark each new day.";
       if (mixedTradeTypes) {
         metaMsg += " Mixed debit/credit entries detected; shading uses reference trade semantics.";
       }

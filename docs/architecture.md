@@ -5,6 +5,7 @@ This repo has three connected layers:
 - a collector that fetches SPX spot/options data from Tastytrade
 - SQLite or Postgres storage for normalized market snapshots
 - Python HTTP apps that expose local and public strategy tooling
+- sanitized deployment templates so the repo can be shared without exposing live host details
 
 ## High-Level Flow
 
@@ -34,7 +35,7 @@ flowchart LR
     N["Local browser"] --> K
     N --> L
 
-    O["Public browser\nmarketplayground.io"] --> P["Caddy reverse proxy\nports 80/443"]
+    O["Public browser\nyour-domain.example"] --> P["Caddy reverse proxy\nports 80/443"]
     P --> Q["systemd: spx-backtest-prod.service"]
     Q --> M
     D --> T["systemd: spx-collector.service"]
@@ -64,8 +65,8 @@ flowchart LR
 ### 3. Public website path
 
 - `src/spx_collector/backtest_prod.py` is the public website app.
-- On Lightsail it runs behind `deploy/systemd/spx-backtest-prod.service`.
-- `deploy/caddy/marketplayground.io.Caddyfile` reverse proxies the public domain to `127.0.0.1:8789`.
+- In production it can run behind `deploy/systemd/spx-backtest-prod.service`.
+- `deploy/caddy/public-site.example.Caddyfile` is a sanitized example that reverse proxies a public domain to `127.0.0.1:8789`.
 - The public request path is:
 
 `Browser -> Caddy -> backtest_prod.py -> SQLite`

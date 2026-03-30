@@ -1,7 +1,7 @@
-marketplayground.io {
+your-domain.example {
     reverse_proxy 127.0.0.1:8789
 }
 
-www.marketplayground.io {
+www.your-domain.example {
     reverse_proxy 127.0.0.1:8789
 }

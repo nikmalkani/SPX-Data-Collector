@@ -4,7 +4,7 @@ This repo has three working parts:
 
 - the collector that pulls SPX data from tastytrade and stores snapshots
 - local backtest/playground HTTP apps for dev and staging work
-- the prod backtest app that is served publicly at `marketplayground.io`
+- the prod backtest app that can be served publicly behind a reverse proxy
 
 Current collector behavior per run:
 - Inserts one market snapshot row for `SPX` into `spx_market_snapshots`.
@@ -49,7 +49,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Create `.env` with at least:
+Create `.env` from `.env.example` with at least:
 - `TASTYTRADE_CLIENT_SECRET`
 - `TASTYTRADE_REFRESH_TOKEN`
 
@@ -77,9 +77,9 @@ The public website runs with this request path:
 
 Current prod hosting layout in this repo:
 
-- Caddy reverse proxies `marketplayground.io` to the prod app
-- `deploy/systemd/spx-backtest-prod.service` runs the public UI on loopback
-- the prod UI and collector share the same local SQLite file on the Lightsail instance
+- Caddy can reverse proxy a public hostname to the prod app
+- `deploy/systemd/spx-backtest-prod.service` is a sanitized example that runs the public UI on loopback
+- the prod UI and collector can share the same local SQLite file on the host instance
 
 Contributor-level deployment notes live here:
 
@@ -161,18 +161,18 @@ Export options to CSV:
 sqlite3 -header -csv spx_options.db "SELECT * FROM spx_option_snapshots ORDER BY snapshot_ts DESC, expiration_date, strike_price, option_type;" > spx_option_snapshots.csv
 ```
 
-## Deploy Update (Lightsail)
+## Deploy Update (Example Host)
 
-Treat the local repo as the source of truth and Lightsail as a deploy target. Normal flow is:
+Treat the local repo as the source of truth and your server as a deploy target. Normal flow is:
 
 1. Make and test changes locally.
 2. Merge reviewed changes into `main`.
-3. On Lightsail, fast-forward `main` and restart services.
+3. On the host, fast-forward `main` and restart services.
 
 Typical update commands:
 
 ```bash
-cd ~/SPX-Data-Collector
+cd /path/to/SPX-Data-Collector
 git checkout main
 git pull --ff-only origin main
 source .venv/bin/activate
@@ -182,7 +182,7 @@ journalctl -u spx-backtest-prod -n 80 --no-pager
 journalctl -u spx-collector -n 80 --no-pager
 ```
 
-For full website setup and service wiring, use `docs/lightsail_prod_setup.md`.
+For a sanitized deployment template, use `docs/lightsail_prod_setup.md`.
 
 ## Notes
 

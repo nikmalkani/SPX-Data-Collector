@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="/home/ubuntu/SPX-Data-Collector"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_DB_PATH="${REPO_DIR}/spx_options.db"
 BACKUP_DIR="${REPO_DIR}/backups/sqlite"
 KEEP_DAYS="${KEEP_DAYS:-14}"
 
-db_url="${DB_URL:-sqlite:////home/ubuntu/SPX-Data-Collector/spx_options.db}"
+db_url="${DB_URL:-sqlite:///${DEFAULT_DB_PATH}}"
 
 case "$db_url" in
   sqlite:////*)

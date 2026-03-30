@@ -60,16 +60,16 @@
   - "ssh me into my lightsail server"
   - "ssh me into my server"
   - or equivalent phrasing to open their server workspace
-- Open VS Code Remote-SSH in a new window using:
+- Open VS Code Remote-SSH in a new window using the locally configured host alias and project path:
 
 ```bash
-code --new-window --remote ssh-remote+lightsail-spx /home/ubuntu/SPX-Data-Collector
+code --new-window --remote ssh-remote+your-host-alias /path/to/project
 ```
 
 - If the user explicitly asks for terminal-only SSH (for example: "ssh in terminal only", "plain ssh session"), run:
 
 ```bash
-ssh -i ~/Downloads/LightsailDefaultKey-us-west-2.pem ubuntu@16.144.246.185
+ssh -i /path/to/private-key user@your-server-ip
 ```
 
 ## Backtest UI Port Defaults

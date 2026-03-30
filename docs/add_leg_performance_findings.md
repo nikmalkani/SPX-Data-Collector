@@ -14,7 +14,7 @@ The strongest confirmed causes were:
 
 ## Measured Requests
 
-Live site at `https://marketplayground.io`:
+Public site measurement:
 
 - `snapshot-dates`:
   - `0.34s`, `193 B`

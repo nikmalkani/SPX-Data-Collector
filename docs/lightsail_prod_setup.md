@@ -1,6 +1,6 @@
-# Lightsail Prod Setup
+# Public Deployment Template
 
-This repo is set up to run `marketplayground.io` from a single Lightsail instance using:
+This sanitized example shows how to run the public app from a single Linux host using:
 
 - `spx-collector.service` for data collection
 - `spx-backtest-prod.service` for the public UI on `127.0.0.1:8789`
@@ -9,19 +9,19 @@ This repo is set up to run `marketplayground.io` from a single Lightsail instanc
 
 ## Assumed Server Paths
 
-- Repo: `/home/ubuntu/SPX-Data-Collector`
-- Venv: `/home/ubuntu/SPX-Data-Collector/.venv`
-- DB file: `/home/ubuntu/SPX-Data-Collector/spx_options.db`
+- Repo: `/opt/spx-data-collector`
+- Venv: `/opt/spx-data-collector/.venv`
+- DB file: `/opt/spx-data-collector/spx_options.db`
 
 The `.env` file should use an absolute SQLite path:
 
 ```env
-DB_URL=sqlite:////home/ubuntu/SPX-Data-Collector/spx_options.db
+DB_URL=sqlite:////opt/spx-data-collector/spx_options.db
 ```
 
 ## 1. DNS
 
-Point the DNS `A` record for `marketplayground.io` at the Lightsail static IP.
+Point the DNS `A` record for `your-domain.example` at the server's static IP.
 
 If you want `www`, point it too and let Caddy redirect it to the root domain.
 
@@ -50,11 +50,11 @@ sudo systemctl enable --now spx-sqlite-backup.timer
 ## 4. Install Caddy config
 
 ```bash
-sudo cp deploy/caddy/marketplayground.io.Caddyfile /etc/caddy/Caddyfile
+sudo cp deploy/caddy/public-site.example.Caddyfile /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-If DNS is not pointed yet, Caddy will keep retrying certificate issuance until the domain resolves to the instance.
+Before using the checked-in Caddy example, replace placeholder hostnames with your real domain. If DNS is not pointed yet, Caddy will keep retrying certificate issuance until the domain resolves to the instance.
 
 ## 5. Firewall
 
@@ -78,8 +78,8 @@ curl -I http://127.0.0.1:8789/
 Public:
 
 ```bash
-curl -I http://marketplayground.io
-curl -I https://marketplayground.io
+curl -I http://your-domain.example
+curl -I https://your-domain.example
 ```
 
 ## 7. Logs

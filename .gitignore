@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.pyc
@@ -14,3 +16,4 @@ backups/
 *.egg-info/
 
 *.egg-info/
+.secrets.baseline

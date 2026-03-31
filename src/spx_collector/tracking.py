@@ -13,6 +13,9 @@ ALLOWED_EVENT_NAMES = {
     "strategy_leg_add_result",
     "strategy_run_attempt",
     "strategy_run_result",
+    "strategy_share_attempt",
+    "strategy_share_result",
+    "strategy_share_open",
 }
 DEFAULT_METRICS_WINDOW_DAYS = 14
 MAX_STRING_LENGTH = 255
@@ -314,6 +317,8 @@ METRICS_HTML = """<!doctype html>
               <span class="legend-item"><span class="swatch" style="background:#0f766e;"></span>Sessions</span>
               <span class="legend-item"><span class="swatch" style="background:#1d4ed8;"></span>Add Leg</span>
               <span class="legend-item"><span class="swatch" style="background:#7c3aed;"></span>Run Strategy</span>
+              <span class="legend-item"><span class="swatch" style="background:#0284c7;"></span>Share Clicks</span>
+              <span class="legend-item"><span class="swatch" style="background:#16a34a;"></span>Share Opens</span>
             </div>
           </div>
         </div>
@@ -403,6 +408,9 @@ METRICS_HTML = """<!doctype html>
         metricCard("Unique Visitors", payload.unique_visitors, "Distinct anonymous browser IDs"),
         metricCard("Add Leg Clicks", payload.add_leg_attempts, `Success rate ${formatPercent(payload.add_leg_success_rate)}`),
         metricCard("Run Clicks", payload.run_attempts, `Success rate ${formatPercent(payload.run_success_rate)}`),
+        metricCard("Share Clicks", payload.share_attempts, `Success rate ${formatPercent(payload.share_success_rate)}`),
+        metricCard("Share Successes", payload.share_successes, "Created shareable links"),
+        metricCard("Shared Link Opens", payload.share_opens, "Visitors who opened a shared strategy"),
         metricCard("Add Leg Successes", payload.add_leg_successes, "Successful leg resolutions"),
         metricCard("Run Successes", payload.run_successes, "Completed strategy analyses"),
         metricCard("Run Empty/Error", payload.run_non_success, "Empty or failed strategy runs"),
@@ -464,7 +472,9 @@ METRICS_HTML = """<!doctype html>
           Number(row.unique_visitors) || 0,
           Number(row.sessions) || 0,
           Number(row.add_leg_attempts) || 0,
-          Number(row.run_attempts) || 0
+          Number(row.run_attempts) || 0,
+          Number(row.share_attempts) || 0,
+          Number(row.share_opens) || 0
         ))
       );
 
@@ -482,6 +492,8 @@ METRICS_HTML = """<!doctype html>
         { key: "sessions", color: "#0f766e" },
         { key: "add_leg_attempts", color: "#1d4ed8" },
         { key: "run_attempts", color: "#7c3aed" },
+        { key: "share_attempts", color: "#0284c7" },
+        { key: "share_opens", color: "#16a34a" },
       ];
 
       const grid = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -875,6 +887,21 @@ def build_overview_payload(db_path: Path, *, from_date: date, to_date: date) -> 
         if event["event_name"] == "strategy_run_result"
         and event["outcome"] == "success"
     )
+    share_attempts = sum(
+        1 for event in events if event["event_name"] == "strategy_share_attempt"
+    )
+    share_successes = sum(
+        1
+        for event in events
+        if event["event_name"] == "strategy_share_result"
+        and event["outcome"] == "success"
+    )
+    share_opens = sum(
+        1
+        for event in events
+        if event["event_name"] == "strategy_share_open"
+        and event["outcome"] == "success"
+    )
     run_result_events = sum(
         1 for event in events if event["event_name"] == "strategy_run_result"
     )
@@ -882,6 +909,9 @@ def build_overview_payload(db_path: Path, *, from_date: date, to_date: date) -> 
         (add_leg_successes / add_leg_attempts) * 100 if add_leg_attempts else 0.0
     )
     run_success_rate = (run_successes / run_attempts) * 100 if run_attempts else 0.0
+    share_success_rate = (
+        (share_successes / share_attempts) * 100 if share_attempts else 0.0
+    )
     return {
         "range": {"from": from_date.isoformat(), "to": to_date.isoformat()},
         "pageviews": pageviews,
@@ -894,6 +924,10 @@ def build_overview_payload(db_path: Path, *, from_date: date, to_date: date) -> 
         "run_successes": run_successes,
         "run_success_rate": run_success_rate,
         "run_non_success": max(0, run_result_events - run_successes),
+        "share_attempts": share_attempts,
+        "share_successes": share_successes,
+        "share_success_rate": share_success_rate,
+        "share_opens": share_opens,
     }
 
 
@@ -909,6 +943,8 @@ def build_timeseries_payload(db_path: Path, *, from_date: date, to_date: date) -
             "unique_visitors": set(),
             "add_leg_attempts": 0,
             "run_attempts": 0,
+            "share_attempts": 0,
+            "share_opens": 0,
         }
         cursor += timedelta(days=1)
 
@@ -925,6 +961,13 @@ def build_timeseries_payload(db_path: Path, *, from_date: date, to_date: date) -
             bucket["add_leg_attempts"] += 1
         elif event["event_name"] == "strategy_run_attempt":
             bucket["run_attempts"] += 1
+        elif event["event_name"] == "strategy_share_attempt":
+            bucket["share_attempts"] += 1
+        elif (
+            event["event_name"] == "strategy_share_open"
+            and event["outcome"] == "success"
+        ):
+            bucket["share_opens"] += 1
 
     rows: list[dict[str, Any]] = []
     for day in sorted(rows_by_day):
@@ -937,6 +980,8 @@ def build_timeseries_payload(db_path: Path, *, from_date: date, to_date: date) -
                 "unique_visitors": len(bucket["unique_visitors"]),
                 "add_leg_attempts": bucket["add_leg_attempts"],
                 "run_attempts": bucket["run_attempts"],
+                "share_attempts": bucket["share_attempts"],
+                "share_opens": bucket["share_opens"],
             }
         )
 

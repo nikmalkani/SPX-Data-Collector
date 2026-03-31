@@ -125,6 +125,43 @@ class TrackingModuleTests(unittest.TestCase):
             },
         )
         self._insert(
+            "strategy_share_attempt",
+            "2026-03-20T14:07:00Z",
+            data={
+                "symbol": "SPX",
+                "legs": [
+                    {
+                        "side": "BUY",
+                        "option_type": "PUT",
+                        "target_delta": 35,
+                        "target_dte": 1,
+                        "quantity": 1,
+                        "entry_time": "10:30",
+                    }
+                ],
+            },
+        )
+        self._insert(
+            "strategy_share_result",
+            "2026-03-20T14:07:01Z",
+            outcome="success",
+            data={
+                "symbol": "SPX",
+                "share_token": "share-123",
+            },
+        )
+        self._insert(
+            "strategy_share_open",
+            "2026-03-21T10:00:00Z",
+            outcome="success",
+            data={
+                "symbol": "SPX",
+                "share_token": "share-123",
+            },
+            anonymous_id="anon-3",
+            session_id="sess-3",
+        )
+        self._insert(
             "page_view",
             "2026-03-21T16:00:00Z",
             anonymous_id="anon-2",
@@ -137,12 +174,15 @@ class TrackingModuleTests(unittest.TestCase):
             to_date=date.fromisoformat("2026-03-21"),
         )
         self.assertEqual(overview["pageviews"], 2)
-        self.assertEqual(overview["sessions"], 2)
-        self.assertEqual(overview["unique_visitors"], 2)
+        self.assertEqual(overview["sessions"], 3)
+        self.assertEqual(overview["unique_visitors"], 3)
         self.assertEqual(overview["add_leg_attempts"], 1)
         self.assertEqual(overview["add_leg_successes"], 1)
         self.assertEqual(overview["run_attempts"], 1)
         self.assertEqual(overview["run_successes"], 1)
+        self.assertEqual(overview["share_attempts"], 1)
+        self.assertEqual(overview["share_successes"], 1)
+        self.assertEqual(overview["share_opens"], 1)
 
         timeseries = build_timeseries_payload(
             self.tracking_db,
@@ -152,7 +192,9 @@ class TrackingModuleTests(unittest.TestCase):
         self.assertEqual(len(timeseries["rows"]), 2)
         self.assertEqual(timeseries["rows"][0]["add_leg_attempts"], 1)
         self.assertEqual(timeseries["rows"][0]["run_attempts"], 1)
-        self.assertEqual(timeseries["rows"][1]["unique_visitors"], 1)
+        self.assertEqual(timeseries["rows"][0]["share_attempts"], 1)
+        self.assertEqual(timeseries["rows"][1]["unique_visitors"], 2)
+        self.assertEqual(timeseries["rows"][1]["share_opens"], 1)
 
         recent_runs = build_recent_runs_payload(
             self.tracking_db,

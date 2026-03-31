@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import secrets
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +23,10 @@ from .tracking import (
     insert_tracking_event,
     parse_metrics_date_range,
 )
+
+_STAGING_SHARE_DB_URL_ENV = "STRATEGY_SHARE_DB_URL"
+_STAGING_SHARE_DB_DEFAULT_URL = "sqlite:///strategy_shares_staging.db"
+_MAX_STRATEGY_SHARE_BODY_BYTES = 1_500_000
 
 
 def _resolve_sqlite_path(db_url: str) -> Path:
@@ -809,6 +815,134 @@ def _run_strategy_history_payload(
     }
 
 
+def _share_db_url() -> str:
+    return os.getenv(_STAGING_SHARE_DB_URL_ENV, _STAGING_SHARE_DB_DEFAULT_URL)
+
+
+def ensure_strategy_share_db(db_url: str) -> Path:
+    db_path = _resolve_sqlite_path(db_url)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_shares (
+                share_token TEXT PRIMARY KEY,
+                created_at_utc TEXT NOT NULL,
+                strategy_json TEXT NOT NULL,
+                results_json TEXT NOT NULL,
+                meta_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_strategy_shares_created_at ON strategy_shares (created_at_utc)"
+        )
+        conn.commit()
+    return db_path
+
+
+def _normalize_share_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("Share payload must be a JSON object.")
+    strategy = value.get("strategy")
+    results = value.get("results")
+    meta = value.get("meta")
+    if not isinstance(strategy, dict):
+        raise ValueError("strategy must be an object.")
+    if not isinstance(results, dict):
+        raise ValueError("results must be an object.")
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        raise ValueError("meta must be an object.")
+    legs = strategy.get("legs")
+    rows = results.get("rows")
+    if not isinstance(legs, list) or not legs:
+        raise ValueError("strategy.legs must be a non-empty array.")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("results.rows must be a non-empty array.")
+    return {
+        "strategy": strategy,
+        "results": results,
+        "meta": meta,
+    }
+
+
+def _generate_share_token() -> str:
+    return secrets.token_urlsafe(9).rstrip("=")
+
+
+def _create_strategy_share(db_path: Path, payload: Any) -> dict[str, Any]:
+    normalized = _normalize_share_payload(payload)
+    created_at_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    meta = dict(normalized["meta"])
+    token = _generate_share_token()
+    meta["share_token"] = token
+    meta["created_at_utc"] = created_at_utc
+    strategy_json = json.dumps(normalized["strategy"], separators=(",", ":"), sort_keys=True)
+    results_json = json.dumps(normalized["results"], separators=(",", ":"), sort_keys=True)
+    meta_json = json.dumps(meta, separators=(",", ":"), sort_keys=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO strategy_shares (
+                share_token,
+                created_at_utc,
+                strategy_json,
+                results_json,
+                meta_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (token, created_at_utc, strategy_json, results_json, meta_json),
+        )
+        conn.commit()
+    return {
+        "share_token": token,
+        "created_at_utc": created_at_utc,
+        "strategy": normalized["strategy"],
+        "results": normalized["results"],
+        "meta": meta,
+    }
+
+
+def _load_strategy_share(db_path: Path, share_token: str) -> dict[str, Any] | None:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT share_token, created_at_utc, strategy_json, results_json, meta_json
+            FROM strategy_shares
+            WHERE share_token = ?
+            LIMIT 1
+            """,
+            [share_token],
+        ).fetchone()
+    if row is None:
+        return None
+    strategy = json.loads(str(row["strategy_json"]))
+    results = json.loads(str(row["results_json"]))
+    meta = json.loads(str(row["meta_json"]))
+    if not isinstance(strategy, dict) or not isinstance(results, dict) or not isinstance(meta, dict):
+        raise ValueError("Stored share payload is invalid.")
+    return {
+        "share_token": str(row["share_token"]),
+        "created_at_utc": str(row["created_at_utc"]),
+        "strategy": strategy,
+        "results": results,
+        "meta": meta,
+    }
+
+
+def _build_strategy_share_url(handler: BaseHTTPRequestHandler, share_token: str) -> str:
+    forwarded_host = str(handler.headers.get("X-Forwarded-Host") or "").strip()
+    host = forwarded_host or str(handler.headers.get("Host") or "").strip()
+    if not host:
+        server_host, server_port = handler.server.server_address[:2]
+        host = f"{server_host}:{server_port}"
+    proto = str(handler.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip() or "http"
+    return f"{proto}://{host}/?share={share_token}"
+
+
 def _error_response(handler: BaseHTTPRequestHandler, message: str, status: int = 400) -> None:
     _json_response(handler, {"error": message}, status=status)
 
@@ -827,6 +961,7 @@ def _get_qs(params: dict[str, list[str]], key: str, default: str | None = None) 
 
 class SqlUiHandler(BaseHTTPRequestHandler):
     db_path: Path
+    share_db_path: Path | None = None
     tracking_db_path: Path | None = None
     tracking_enabled: bool = False
     tracking_metrics_enabled: bool = False
@@ -845,6 +980,26 @@ class SqlUiHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             _json_response(self, {"ok": True})
+            return
+        if path.startswith("/api/strategy-shares/"):
+            if self.share_db_path is None:
+                _json_response(self, {"error": "not_found"}, status=404)
+                return
+            share_token = path[len("/api/strategy-shares/") :].strip()
+            if not share_token:
+                _json_response(self, {"error": "not_found"}, status=404)
+                return
+            try:
+                payload = _load_strategy_share(self.share_db_path, share_token)
+                if payload is None:
+                    _json_response(self, {"error": "not_found"}, status=404)
+                    return
+                payload["share_url"] = _build_strategy_share_url(
+                    self, payload["share_token"]
+                )
+                _json_response(self, payload)
+            except Exception as exc:
+                _error_response(self, str(exc))
             return
         if path == "/api/ops/metrics/overview":
             if not self.tracking_metrics_enabled or self.tracking_db_path is None:
@@ -1042,13 +1197,22 @@ class SqlUiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path, _ = _get_query_params(self.path)
-        if path not in {"/api/options/strategy-history", "/api/track"}:
+        if path not in {
+            "/api/options/strategy-history",
+            "/api/track",
+            "/api/strategy-shares",
+        }:
             _json_response(self, {"error": "not_found"}, status=404)
             return
 
         try:
             raw_len = int(self.headers.get("Content-Length", "0"))
-            if raw_len > 32_768:
+            max_body = (
+                _MAX_STRATEGY_SHARE_BODY_BYTES
+                if path == "/api/strategy-shares"
+                else 32_768
+            )
+            if raw_len > max_body:
                 raise ValueError("Request body too large.")
             body = self.rfile.read(raw_len).decode("utf-8")
             parsed = json.loads(body)
@@ -1059,6 +1223,16 @@ class SqlUiHandler(BaseHTTPRequestHandler):
                     return
                 payload = insert_tracking_event(self.tracking_db_path, parsed)
                 _json_response(self, payload, status=202)
+                return
+            if path == "/api/strategy-shares":
+                if self.share_db_path is None:
+                    _json_response(self, {"error": "not_found"}, status=404)
+                    return
+                payload = _create_strategy_share(self.share_db_path, parsed)
+                payload["share_url"] = _build_strategy_share_url(
+                    self, payload["share_token"]
+                )
+                _json_response(self, payload, status=201)
                 return
 
             payload_legs_raw = parsed.get("legs")
@@ -1106,11 +1280,13 @@ def main() -> None:
     db_path = _resolve_sqlite_path(settings.db_url)
     if not db_path.exists():
         raise FileNotFoundError(f"SQLite DB not found at {db_path}")
+    share_db_path = ensure_strategy_share_db(_share_db_url())
     tracking_db_path = None
     if settings.tracking_enabled or settings.tracking_metrics_enabled:
         tracking_db_path = ensure_tracking_db(settings.tracking_db_url)
 
     SqlUiHandler.db_path = db_path
+    SqlUiHandler.share_db_path = share_db_path
     SqlUiHandler.tracking_db_path = tracking_db_path
     SqlUiHandler.tracking_enabled = bool(settings.tracking_enabled and tracking_db_path)
     SqlUiHandler.tracking_metrics_enabled = bool(
@@ -1458,6 +1634,41 @@ _HTML = """<!doctype html>
       gap: 12px;
       flex-wrap: wrap;
     }
+    .chart-share-group {
+      margin-left: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+    }
+    .share-strategy-btn {
+      width: auto;
+      min-width: 168px;
+      padding: 10px 16px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.2);
+    }
+    .share-strategy-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      box-shadow: none;
+    }
+    .share-feedback {
+      max-width: 360px;
+      text-align: right;
+      font-size: 0.82rem;
+      line-height: 1.4;
+    }
+    .share-feedback a {
+      color: inherit;
+      font-weight: 700;
+      text-decoration: underline;
+      word-break: break-all;
+    }
+    .share-snapshot-note {
+      margin-top: 8px;
+    }
     .chart-toggle-group {
       display: inline-flex;
       gap: 10px;
@@ -1734,6 +1945,17 @@ _HTML = """<!doctype html>
         overflow: hidden;
         padding: 10px;
       }
+      .chart-share-group {
+        width: 100%;
+        align-items: stretch;
+      }
+      .share-strategy-btn {
+        width: 100%;
+      }
+      .share-feedback {
+        max-width: none;
+        text-align: left;
+      }
       .chart-svg {
         height: min(62vw, 260px);
       }
@@ -1992,7 +2214,8 @@ _HTML = """<!doctype html>
             </div>
           </div>
           <button id="strategyRunBtn" class="run-analysis-wide" style="display:none; margin-top:12px;">Run Strategy</button>
-          <div id="strategyAnalysisMeta" class="meta" style="margin-top:4px;">Resolve at least one leg to analyze.</div>
+          <div id="strategyAnalysisMeta" class="meta" style="margin-top:4px;">Run the replay across all dates in your selected range to analyze</div>
+          <div id="strategySharedState" class="meta share-snapshot-note is-hidden"></div>
         </div>
       </div>
 
@@ -2019,6 +2242,10 @@ _HTML = """<!doctype html>
         <div id="strategyIndexChartCard" class="card is-hidden">
           <div class="chart-card-header">
             <h2 style="margin-bottom: 6px;">Strategy Index Chart</h2>
+            <div class="chart-share-group">
+              <button id="strategyShareBtn" class="share-strategy-btn is-hidden" type="button">Share strategy</button>
+              <div id="strategyShareFeedback" class="meta share-feedback is-hidden"></div>
+            </div>
           </div>
           <div id="strategyIndexChartMeta" class="meta">Aligned at entry (T+0). 15-minute ET interpolation with blended average.</div>
           <div class="chart-wrap">
@@ -2059,6 +2286,12 @@ _HTML = """<!doctype html>
       tableRows: [],
       historyRows: [],
       lastMeta: "",
+      hasCompletedResults: false,
+      resultsOrigin: "",
+      loadedShareToken: "",
+      loadedShareUrl: "",
+      loadedShareCreatedAt: "",
+      isDirtySinceShareLoad: false,
     };
 
     const tabInitState = {
@@ -2161,6 +2394,68 @@ _HTML = """<!doctype html>
       };
     }
 
+    function cloneJsonSafe(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function currentStrategyDefinitionPayload() {
+      const base = currentStrategyRunTrackingPayload();
+      return {
+        symbol: base.symbol,
+        snapshot_from_date: base.snapshot_from_date,
+        snapshot_to_date: base.snapshot_to_date,
+        hold_till_expiry: base.hold_till_expiry,
+        exit_days: base.exit_days,
+        exit_time: base.exit_time,
+        legs: strategyState.legs.map((leg) => ({
+          side: String(leg.side || "").toUpperCase(),
+          quantity: leg.quantity == null ? 1 : Number(leg.quantity),
+          option_type: String(leg.option_type || "").toUpperCase(),
+          target_delta: leg.target_delta == null ? null : Number(leg.target_delta),
+          target_dte: leg.target_dte == null ? null : Number(leg.target_dte),
+          entry_time: String(leg.entry_time || ""),
+          snapshot_from_date: String(leg.snapshot_from_date || ""),
+          snapshot_to_date: String(leg.snapshot_to_date || ""),
+          isResolved: Boolean(leg.isResolved),
+          matched_count: leg.matched_count == null ? null : Number(leg.matched_count),
+          entry_snapshot_ts: String(leg.entry_snapshot_ts || ""),
+          resolved_contracts: Array.isArray(leg.resolved_contracts) ? cloneJsonSafe(leg.resolved_contracts) : [],
+        })),
+      };
+    }
+
+    function currentStrategyShareTrackingPayload(extra) {
+      const stats = summarizeStrategyTrades(strategyState.historyRows || []);
+      return Object.assign({}, currentStrategyRunTrackingPayload(), {
+        result_origin: strategyState.resultsOrigin || "live",
+        source_share_token: strategyState.loadedShareToken || "",
+        is_dirty_since_share_load: Boolean(strategyState.isDirtySinceShareLoad),
+        completed_trade_count: stats.tradeCount || 0,
+        history_row_count: Array.isArray(strategyState.historyRows) ? strategyState.historyRows.length : 0,
+      }, extra || {});
+    }
+
+    function buildStrategySharePayload() {
+      const stats = summarizeStrategyTrades(strategyState.historyRows || []);
+      return {
+        strategy: currentStrategyDefinitionPayload(),
+        results: {
+          rows: cloneJsonSafe(strategyState.historyRows || []),
+        },
+        meta: {
+          source: "backtest_staging",
+          share_version: 1,
+          summary: {
+            trade_count: stats.tradeCount || 0,
+            win_count: stats.winCount || 0,
+            loss_count: stats.lossCount || 0,
+            overall_pnl: stats.overallPnl == null ? null : Number(stats.overallPnl),
+          },
+          source_share_token: strategyState.loadedShareToken || "",
+        },
+      };
+    }
+
     function trackEvent(eventName, data, outcome) {
       if (!TRACKING_ENABLED) return Promise.resolve(null);
       const payload = {
@@ -2193,6 +2488,10 @@ _HTML = """<!doctype html>
 
     function trackPageView() {
       trackEvent("page_view", { title: document.title });
+    }
+
+    function trackStrategyShareResult(outcome, extra) {
+      return trackEvent("strategy_share_result", currentStrategyShareTrackingPayload(extra), outcome);
     }
 
     function escapeHtml(v) {
@@ -2479,6 +2778,99 @@ _HTML = """<!doctype html>
       if (!hasLegs) {
         analysisMeta.textContent = "Resolve at least one leg to analyze.";
       }
+      updateStrategyShareControls();
+    }
+
+    function setStrategyShareFeedback(message, tone, shareUrl) {
+      const feedback = document.getElementById("strategyShareFeedback");
+      if (!feedback) return;
+      feedback.innerHTML = "";
+      feedback.className = `meta share-feedback${tone ? ` ${tone}` : ""}`;
+      if (!message && !shareUrl) {
+        feedback.classList.add("is-hidden");
+        return;
+      }
+      if (message) {
+        const text = document.createElement("span");
+        text.textContent = message;
+        feedback.appendChild(text);
+      }
+      if (shareUrl) {
+        if (message) {
+          feedback.appendChild(document.createTextNode(" "));
+        }
+        const link = document.createElement("a");
+        link.href = shareUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = shareUrl;
+        feedback.appendChild(link);
+      }
+      feedback.classList.remove("is-hidden");
+    }
+
+    function updateStrategySharedStateNote() {
+      const note = document.getElementById("strategySharedState");
+      if (!note) return;
+      note.className = "meta share-snapshot-note";
+      if (strategyState.resultsOrigin === "shared" && strategyState.isDirtySinceShareLoad) {
+        note.textContent = "You edited this shared strategy. The visible stats and chart still reflect the original shared snapshot until you rerun.";
+        note.classList.remove("is-hidden");
+        return;
+      }
+      if (strategyState.resultsOrigin === "shared") {
+        note.textContent = "Loaded from a shared strategy link. You can edit the strategy, rerun it locally, and create a new share link from your updated results.";
+        note.classList.remove("is-hidden");
+        return;
+      }
+      note.textContent = "";
+      note.classList.add("is-hidden");
+    }
+
+    function updateStrategyShareControls() {
+      const btn = document.getElementById("strategyShareBtn");
+      if (!btn) return;
+      const show = Boolean(strategyState.hasCompletedResults);
+      btn.classList.toggle("is-hidden", !show);
+      if (!show) {
+        btn.disabled = true;
+        setStrategyShareFeedback("", "");
+        return;
+      }
+      btn.disabled = Boolean(strategyState.resultsOrigin === "shared" && strategyState.isDirtySinceShareLoad);
+      if (btn.disabled) {
+        setStrategyShareFeedback("Rerun to share your updated strategy.", "");
+      }
+    }
+
+    function markStrategyDirtyFromShare() {
+      if (strategyState.resultsOrigin !== "shared" || strategyState.isDirtySinceShareLoad || !strategyState.hasCompletedResults) {
+        return;
+      }
+      strategyState.isDirtySinceShareLoad = true;
+      updateStrategySharedStateNote();
+      updateStrategyShareControls();
+    }
+
+    function applyStrategyResults(rows, options) {
+      const config = options && typeof options === "object" ? options : {};
+      const normalizedRows = Array.isArray(rows) ? rows : [];
+      strategyState.historyRows = normalizedRows;
+      strategyState.hasCompletedResults = normalizedRows.length > 0;
+      strategyState.resultsOrigin = normalizedRows.length ? String(config.origin || "live") : "";
+      strategyState.loadedShareToken = strategyState.resultsOrigin === "shared" ? String(config.shareToken || "") : "";
+      strategyState.loadedShareUrl = strategyState.resultsOrigin === "shared" ? String(config.shareUrl || "") : "";
+      strategyState.loadedShareCreatedAt = strategyState.resultsOrigin === "shared" ? String(config.createdAt || "") : "";
+      strategyState.isDirtySinceShareLoad = false;
+      setStrategyResultsVisibility(strategyState.hasCompletedResults);
+      renderStrategyStats(normalizedRows);
+      renderStrategySeriesTable(normalizedRows);
+      renderStrategyIndexChart(normalizedRows);
+      if (config.clearFeedback !== false) {
+        setStrategyShareFeedback("", "");
+      }
+      updateStrategySharedStateNote();
+      updateStrategyShareControls();
     }
 
     function renderStrategyLegsTable() {
@@ -2516,6 +2908,7 @@ _HTML = """<!doctype html>
           const id = parseInt(rawId || "", 10);
           if (!Number.isFinite(id)) return;
           strategyState.legs = strategyState.legs.filter((leg) => leg.id !== id);
+          markStrategyDirtyFromShare();
           renderStrategyLegsTable();
         });
       });
@@ -2529,6 +2922,7 @@ _HTML = """<!doctype html>
           const leg = strategyState.legs.find((row) => row.id === id);
           if (!leg) return;
           leg.side = side;
+          markStrategyDirtyFromShare();
           renderStrategyLegsTable();
         });
       });
@@ -2542,6 +2936,7 @@ _HTML = """<!doctype html>
           if (!leg) return;
           const parsed = parseInt(event.currentTarget.value || "1", 10);
           leg.quantity = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+          markStrategyDirtyFromShare();
         });
       });
       refreshStrategyRunButtonVisibility();
@@ -2684,6 +3079,7 @@ _HTML = """<!doctype html>
           entry_snapshot_ts: keptContracts[0] ? keptContracts[0].snapshot_ts : null,
           resolved_contracts: keptContracts,
         });
+        markStrategyDirtyFromShare();
         meta.textContent = "";
         meta.className = "meta";
         trackStrategyLegResult("success", trackingPayload, {
@@ -3066,6 +3462,14 @@ _HTML = """<!doctype html>
       const statsCard = document.getElementById("strategyStatsCard");
       const chartCard = document.getElementById("strategyIndexChartCard");
       const seriesCard = document.getElementById("strategyTimeSeriesCard");
+      if (!showResults) {
+        strategyState.hasCompletedResults = false;
+        strategyState.resultsOrigin = "";
+        strategyState.loadedShareToken = "";
+        strategyState.loadedShareUrl = "";
+        strategyState.loadedShareCreatedAt = "";
+        strategyState.isDirtySinceShareLoad = false;
+      }
       [statsCard, chartCard, seriesCard].forEach((el) => {
         if (!el) return;
         el.classList.toggle("is-hidden", !showResults);
@@ -3073,6 +3477,8 @@ _HTML = """<!doctype html>
       if (seriesCard) {
         seriesCard.classList.add("is-hidden");
       }
+      updateStrategySharedStateNote();
+      updateStrategyShareControls();
     }
 
     function isWithinStrategyExitWindow(tsDate, tradeStartTs, exitDays, exitTime) {
@@ -3931,10 +4337,7 @@ _HTML = """<!doctype html>
             .map((row) => row.streamer_symbol)
             .filter((value) => value != null && value !== "")
         ).size;
-        setStrategyResultsVisibility(true);
-        renderStrategyStats(transformed);
-        renderStrategySeriesTable(transformed);
-        renderStrategyIndexChart(transformed);
+        applyStrategyResults(transformed, { origin: "live" });
         meta.textContent = "";
         meta.className = "meta";
         trackStrategyRunResult("success", {
@@ -3963,16 +4366,34 @@ _HTML = """<!doctype html>
       loadStrategySnapshotDateOptions();
       document
         .getElementById("strategySymbol")
-        .addEventListener("change", loadStrategySnapshotDateOptions);
+        .addEventListener("change", async () => {
+          markStrategyDirtyFromShare();
+          await loadStrategySnapshotDateOptions();
+        });
       ["strategyEntryTime", "strategySnapshotFromDate", "strategySnapshotToDate", "strategyExitTime"].forEach((id) => {
         const input = document.getElementById(id);
         if (!input) return;
-        input.addEventListener("input", syncStrategyMobileNativeDisplays);
-        input.addEventListener("change", syncStrategyMobileNativeDisplays);
+        input.addEventListener("input", () => {
+          syncStrategyMobileNativeDisplays();
+          markStrategyDirtyFromShare();
+        });
+        input.addEventListener("change", () => {
+          syncStrategyMobileNativeDisplays();
+          markStrategyDirtyFromShare();
+        });
       });
+      const exitDaysEl = document.getElementById("strategyExitDays");
+      if (exitDaysEl) {
+        exitDaysEl.addEventListener("input", markStrategyDirtyFromShare);
+        exitDaysEl.addEventListener("change", markStrategyDirtyFromShare);
+      }
       document.getElementById("strategyResolveBtn").addEventListener("click", resolveStrategyLeg);
       document.getElementById("strategyRunBtn").addEventListener("click", runStrategyAnalysis);
-      document.getElementById("strategyHoldToExpiry").addEventListener("change", refreshStrategyExitCriteriaState);
+      document.getElementById("strategyShareBtn").addEventListener("click", shareCurrentStrategy);
+      document.getElementById("strategyHoldToExpiry").addEventListener("change", () => {
+        refreshStrategyExitCriteriaState();
+        markStrategyDirtyFromShare();
+      });
       refreshStrategyExitCriteriaState();
       setStrategyResultsVisibility(false);
       renderStrategyLegsTable();
@@ -4047,6 +4468,139 @@ _HTML = """<!doctype html>
         fromEl.value = "";
         toEl.value = "";
         syncStrategyMobileNativeDisplays();
+      }
+    }
+
+    async function shareCurrentStrategy() {
+      const button = document.getElementById("strategyShareBtn");
+      if (!button || !strategyState.hasCompletedResults || !Array.isArray(strategyState.historyRows) || !strategyState.historyRows.length) {
+        return;
+      }
+      trackEvent("strategy_share_attempt", currentStrategyShareTrackingPayload());
+      button.disabled = true;
+      setStrategyShareFeedback("Creating share link...", "");
+      try {
+        const response = await fetch("/api/strategy-shares", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(buildStrategySharePayload()),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.share_url) {
+          const reason = payload && payload.error ? String(payload.error) : "request_failed";
+          setStrategyShareFeedback(`Could not create share link: ${reason}.`, "danger");
+          trackStrategyShareResult("error", { reason });
+          return;
+        }
+        let copied = false;
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+            await navigator.clipboard.writeText(String(payload.share_url));
+            copied = true;
+          }
+        } catch {}
+        setStrategyShareFeedback(
+          copied ? "Share link copied." : "Share link ready:",
+          "success",
+          String(payload.share_url)
+        );
+        trackStrategyShareResult("success", {
+          share_token: String(payload.share_token || ""),
+          copied_to_clipboard: copied,
+        });
+      } catch {
+        setStrategyShareFeedback("Could not create share link: request failed.", "danger");
+        trackStrategyShareResult("error", { reason: "request_failed" });
+      } finally {
+        updateStrategyShareControls();
+      }
+    }
+
+    function applySharedStrategyDefinition(strategy) {
+      const definition = strategy && typeof strategy === "object" ? strategy : {};
+      const symbol = String(definition.symbol || "SPX");
+      const symbolEl = document.getElementById("strategySymbol");
+      const fromEl = document.getElementById("strategySnapshotFromDate");
+      const toEl = document.getElementById("strategySnapshotToDate");
+      const holdEl = document.getElementById("strategyHoldToExpiry");
+      const exitDaysEl = document.getElementById("strategyExitDays");
+      const exitTimeEl = document.getElementById("strategyExitTime");
+      if (symbolEl) symbolEl.value = symbol;
+      if (fromEl) fromEl.value = String(definition.snapshot_from_date || "");
+      if (toEl) toEl.value = String(definition.snapshot_to_date || "");
+      if (holdEl) holdEl.checked = Boolean(definition.hold_till_expiry);
+      if (exitDaysEl) exitDaysEl.value = String(definition.exit_days == null ? 0 : definition.exit_days);
+      if (exitTimeEl) exitTimeEl.value = String(definition.exit_time || "15:30");
+      const legs = Array.isArray(definition.legs) ? definition.legs : [];
+      strategyState.legs = legs.map((leg, index) => ({
+        id: index + 1,
+        side: String(leg && leg.side ? leg.side : "BUY").toUpperCase(),
+        quantity: leg && leg.quantity != null ? Number(leg.quantity) || 1 : 1,
+        option_type: String(leg && leg.option_type ? leg.option_type : "PUT").toUpperCase(),
+        target_delta: leg && leg.target_delta != null ? Number(leg.target_delta) : null,
+        target_dte: leg && leg.target_dte != null ? Number(leg.target_dte) : null,
+        entry_time: String(leg && leg.entry_time ? leg.entry_time : ""),
+        snapshot_from_date: String(leg && leg.snapshot_from_date ? leg.snapshot_from_date : definition.snapshot_from_date || ""),
+        snapshot_to_date: String(leg && leg.snapshot_to_date ? leg.snapshot_to_date : definition.snapshot_to_date || ""),
+        isResolved: Boolean(leg && leg.isResolved !== false),
+        matched_count: leg && leg.matched_count != null ? Number(leg.matched_count) : null,
+        entry_snapshot_ts: String(leg && leg.entry_snapshot_ts ? leg.entry_snapshot_ts : ""),
+        resolved_contracts: Array.isArray(leg && leg.resolved_contracts) ? cloneJsonSafe(leg.resolved_contracts) : [],
+      }));
+      strategyState.nextLegId = strategyState.legs.length + 1;
+      refreshStrategyExitCriteriaState();
+      renderStrategyLegsTable();
+      syncStrategyMobileNativeDisplays();
+    }
+
+    async function loadSharedStrategyFromUrl() {
+      const params = new URLSearchParams(window.location.search || "");
+      const shareToken = String(params.get("share") || "").trim();
+      if (!shareToken) return;
+      const meta = document.getElementById("strategyAnalysisMeta");
+      if (meta) {
+        meta.textContent = "Loading shared strategy...";
+        meta.className = "meta";
+      }
+      try {
+        const response = await fetch(`/api/strategy-shares/${encodeURIComponent(shareToken)}`);
+        const payload = await response.json();
+        if (!response.ok) {
+          const reason = payload && payload.error ? String(payload.error) : "not_found";
+          if (meta) {
+            meta.textContent = `Could not load shared strategy: ${reason}.`;
+            meta.className = "meta danger";
+          }
+          trackEvent("strategy_share_open", { share_token: shareToken, reason }, "error");
+          return;
+        }
+        applySharedStrategyDefinition(payload.strategy || {});
+        await loadStrategySnapshotDateOptions();
+        applySharedStrategyDefinition(payload.strategy || {});
+        applyStrategyResults(
+          payload && payload.results && Array.isArray(payload.results.rows) ? payload.results.rows : [],
+          {
+            origin: "shared",
+            shareToken: String(payload.share_token || shareToken),
+            shareUrl: String(payload.share_url || ""),
+            createdAt: String(payload.created_at_utc || ""),
+          }
+        );
+        if (meta) {
+          meta.textContent = "Shared strategy loaded. Edit the strategy or rerun it locally to refresh the results.";
+          meta.className = "meta success";
+        }
+        trackEvent(
+          "strategy_share_open",
+          currentStrategyShareTrackingPayload({ share_token: String(payload.share_token || shareToken) }),
+          "success"
+        );
+      } catch {
+        if (meta) {
+          meta.textContent = "Could not load shared strategy: request failed.";
+          meta.className = "meta danger";
+        }
+        trackEvent("strategy_share_open", { share_token: shareToken, reason: "request_failed" }, "error");
       }
     }
 
@@ -4589,10 +5143,11 @@ _HTML = """<!doctype html>
       loadAnalyzerContracts();
     }
 
-    function initPage() {
+    async function initPage() {
       initTabs();
       initStrategyTab();
       initAnalyzerTab();
+      await loadSharedStrategyFromUrl();
       trackPageView();
     }
 
